@@ -13,12 +13,22 @@ class PhotoLibrary: ObservableObject {
     @Published var duplicateGroups: [DuplicateGroup] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var thumbnailsUpdated = Date() // Triggers UI refresh when thumbnails are generated
     
     init() {
         print("📚 PhotoLibrary: Initializing photo library")
         loadRootDirectories()
         loadDuplicates()
         print("✅ PhotoLibrary: Photo library initialization complete")
+        
+        // Set up notification listener for thumbnail updates
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ThumbnailsUpdated"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.thumbnailsUpdated = Date()
+        }
     }
     
     func loadRootDirectories() {
@@ -176,6 +186,68 @@ class PhotoLibrary: ObservableObject {
         
         return yearlyGroups.map { year, months in
             (year, months.sorted { $0.0 > $1.0 })
+        }.sorted { $0.0 > $1.0 }
+    }
+    
+    func getPhotosGroupedByYearAndWeek() -> [(String, [(String, [PhotoFile])])] {
+        var allPhotos: [PhotoFile] = []
+        
+        // Collect all photos from all directories
+        for directory in rootDirectories {
+            if let directoryId = directory.id {
+                allPhotos.append(contentsOf: getPhotosForDirectory(directoryId))
+            }
+        }
+        
+        // Group by year and week
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: allPhotos) { photo -> String in
+            let date = photo.exifDateTaken ?? photo.createdAt
+            let year = calendar.component(.yearForWeekOfYear, from: date)
+            let week = calendar.component(.weekOfYear, from: date)
+            return String(format: "%04d-W%02d", year, week)
+        }
+        
+        let sortedGroups = grouped.sorted { $0.key > $1.key }
+        
+        // Group by year
+        let yearlyGroups = Dictionary(grouping: sortedGroups) { group in
+            String(group.key.prefix(4)) // Extract year from YYYY-Www
+        }
+        
+        return yearlyGroups.map { year, weeks in
+            (year, weeks.sorted { $0.0 > $1.0 })
+        }.sorted { $0.0 > $1.0 }
+    }
+    
+    func getPhotosGroupedByYearAndDay() -> [(String, [(String, [PhotoFile])])] {
+        var allPhotos: [PhotoFile] = []
+        
+        // Collect all photos from all directories
+        for directory in rootDirectories {
+            if let directoryId = directory.id {
+                allPhotos.append(contentsOf: getPhotosForDirectory(directoryId))
+            }
+        }
+        
+        // Group by day
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        
+        let grouped = Dictionary(grouping: allPhotos) { photo in
+            let date = photo.exifDateTaken ?? photo.createdAt
+            return dateFormatter.string(from: date)
+        }
+        
+        let sortedGroups = grouped.sorted { $0.key > $1.key }
+        
+        // Group by year
+        let yearlyGroups = Dictionary(grouping: sortedGroups) { group in
+            String(group.key.prefix(4)) // Extract year from YYYY-MM-DD
+        }
+        
+        return yearlyGroups.map { year, days in
+            (year, days.sorted { $0.0 > $1.0 })
         }.sorted { $0.0 > $1.0 }
     }
     

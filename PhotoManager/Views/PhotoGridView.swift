@@ -76,6 +76,10 @@ struct PhotoGridView: View {
         .onChange(of: filterDirectoryId) {
             loadPhotos()
         }
+        .onChange(of: photoLibrary.thumbnailsUpdated) {
+            logger.info("Thumbnails updated, reloading photos")
+            loadPhotos()
+        }
         .onChange(of: selectedPhoto) { oldValue, newValue in
             // When detail view closes (selectedPhoto becomes nil), reload to get fresh data
             if newValue == nil && oldValue != nil {
@@ -256,6 +260,10 @@ struct PhotoThumbnailView: View {
         .onAppear {
             loadThumbnail()
         }
+        .onChange(of: photo.hasThumbnail) {
+            loadThumbnail()
+        }
+        .id(photo.id) // Force view refresh when photo changes
     }
     
     private func loadThumbnail() {
