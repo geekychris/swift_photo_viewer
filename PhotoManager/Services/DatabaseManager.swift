@@ -464,6 +464,57 @@ class DatabaseManager: ObservableObject {
         
         return photos
     }
+    
+    // MARK: - Debug Operations
+    
+    func executeRawSQL(_ sql: String) async throws -> ([String], [[String: String]]) {
+        return try await Task.detached {
+            guard let db = self.db else { throw DatabaseError.connectionFailed }
+            
+            var columnNames: [String] = []
+            var results: [[String: String]] = []
+            
+            // Execute the query
+            let statement = try db.prepare(sql)
+            
+            // Get column names from the statement
+            columnNames = statement.columnNames
+            
+            // Fetch all rows
+            for row in statement {
+                var rowDict: [String: String] = [:]
+                
+                for (index, columnName) in columnNames.enumerated() {
+                    // Convert the value to string representation
+                    let value: String
+                    if let stringValue = row[index] as? String {
+                        value = stringValue
+                    } else if let intValue = row[index] as? Int64 {
+                        value = String(intValue)
+                    } else if let doubleValue = row[index] as? Double {
+                        value = String(doubleValue)
+                    } else if let boolValue = row[index] as? Bool {
+                        value = String(boolValue)
+                    } else if let dateValue = row[index] as? Date {
+                        let formatter = ISO8601DateFormatter()
+                        value = formatter.string(from: dateValue)
+                    } else if let dataValue = row[index] as? Data {
+                        value = "<Data: \(dataValue.count) bytes>"
+                    } else if row[index] == nil {
+                        value = "NULL"
+                    } else {
+                        value = String(describing: row[index]!)
+                    }
+                    
+                    rowDict[columnName] = value
+                }
+                
+                results.append(rowDict)
+            }
+            
+            return (columnNames, results)
+        }.value
+    }
 }
 
 enum DatabaseError: Error {

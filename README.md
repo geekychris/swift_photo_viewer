@@ -11,6 +11,10 @@ A comprehensive photo management application for macOS built with Swift and Swif
 - **File Hashing**: Calculate SHA256 hashes for each file to enable duplicate detection
 - **Thumbnail Generation**: Generate and cache thumbnails for fast browsing
 
+![img.png](img.png)
+
+![img_1.png](img_1.png)
+
 ### Browsing Modes
 - **Directory View**: Browse photos organized by their actual directory structure
 - **Timeline View**: Browse photos organized by year/month/day using EXIF date information
@@ -22,6 +26,16 @@ A comprehensive photo management application for macOS built with Swift and Swif
 - **Full Image Viewer**: Click thumbnails to view full-resolution images with EXIF data
 - **Rescan Support**: Keep database in sync by rescanning directories
 - **SQLite Database**: Robust local database storage
+
+![img_2.png](img_2.png)
+![img_3.png](img_3.png)
+
+
+![img_4.png](img_4.png)
+
+And search for keywords in description and tags along with date constraints and camera parameters:
+
+![img_5.png](img_5.png)
 
 ## Supported File Formats
 

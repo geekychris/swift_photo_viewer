@@ -21,10 +21,33 @@ struct PhotoManagerApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified)
+        .commands {
+            DebugCommands()
+        }
         
         Settings {
             SettingsView()
                 .environmentObject(databaseManager)
+        }
+        
+        WindowGroup("Database Debug", id: "database-debug") {
+            DatabaseDebugView()
+                .environmentObject(databaseManager)
+        }
+        .defaultPosition(.center)
+        .defaultSize(width: 1000, height: 700)
+    }
+}
+
+struct DebugCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Database Debug Window") {
+                openWindow(id: "database-debug")
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
         }
     }
 }
