@@ -192,6 +192,21 @@ class DatabaseManager: ObservableObject {
         try db.run(directory.update(DatabaseTables.rootDirLastScannedAt <- date))
     }
     
+    func deleteRootDirectory(_ id: Int64) throws {
+        Self.logger.info("Deleting root directory with ID: \(id, privacy: .public)")
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        // The foreign key constraint with CASCADE will automatically delete associated photos
+        let directory = DatabaseTables.rootDirectories.filter(DatabaseTables.rootDirId == id)
+        let deletedRows = try db.run(directory.delete())
+        
+        if deletedRows > 0 {
+            Self.logger.info("Successfully deleted root directory with ID: \(id, privacy: .public)")
+        } else {
+            Self.logger.warning("No root directory found with ID: \(id, privacy: .public)")
+        }
+    }
+    
     // MARK: - Photo File Operations
     
     func addPhotoFile(_ photo: PhotoFile) throws -> Int64 {

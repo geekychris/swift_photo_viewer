@@ -75,7 +75,7 @@ class PhotoLibrary: ObservableObject {
         }
     }
     
-    func scanDirectory(_ directory: RootDirectory) async {
+    func scanDirectory(_ directory: RootDirectory, fastScan: Bool = false, regenerateThumbnails: Bool = false) async {
         logger.info("Starting scanDirectory for: \(directory.name, privacy: .public) at \(directory.path, privacy: .public)")
         await MainActor.run {
             isLoading = true
@@ -83,15 +83,15 @@ class PhotoLibrary: ObservableObject {
         }
         
         do {
-            logger.info("Calling fileScanningService.scanDirectory")
+            logger.info("Calling fileScanningService.scanDirectory (fastScan: \(fastScan, privacy: .public))")
             // Scan for files and extract metadata
-            try await fileScanningService.scanDirectory(directory)
+            try await fileScanningService.scanDirectory(directory, fastScan: fastScan)
             logger.info("File scanning completed successfully")
             
             // Generate thumbnails
             if let directoryId = directory.id {
-                print("🖼 PhotoLibrary: Generating thumbnails for directory ID: \(directoryId)")
-                try await thumbnailService.generateThumbnailsForDirectory(directoryId)
+                print("🖼 PhotoLibrary: Generating thumbnails for directory ID: \(directoryId) (regenerateAll: \(regenerateThumbnails))")
+                try await thumbnailService.generateThumbnailsForDirectory(directoryId, regenerateAll: regenerateThumbnails)
                 print("✅ PhotoLibrary: Thumbnail generation completed")
             } else {
                 print("❌ PhotoLibrary: No directory ID available for thumbnail generation")
@@ -149,6 +149,40 @@ class PhotoLibrary: ObservableObject {
             loadDuplicates() // Refresh duplicates after deletion
         } catch {
             errorMessage = "Failed to delete photo: \(error.localizedDescription)"
+        }
+    }
+    
+    func deleteRootDirectory(_ directory: RootDirectory) {
+        logger.info("Deleting root directory: \(directory.name, privacy: .public)")
+        guard let directoryId = directory.id else {
+            logger.error("Cannot delete directory without ID")
+            errorMessage = "Cannot delete directory: No ID found"
+            return
+        }
+        
+        do {
+            // Get all photos for this directory to clean up thumbnails
+            let photos = try databaseManager.getPhotosForDirectory(directoryId)
+            
+            // Delete thumbnails
+            for photo in photos {
+                try? thumbnailService.deleteThumbnail(for: photo)
+            }
+            
+            // Delete directory from database (cascades to photos)
+            try databaseManager.deleteRootDirectory(directoryId)
+            logger.info("Successfully deleted root directory")
+            
+            // Reload data
+            loadRootDirectories()
+            loadDuplicates()
+            
+            // Force UI refresh
+            objectWillChange.send()
+        } catch {
+            let errorMsg = "Failed to delete directory: \(error.localizedDescription)"
+            logger.error("Failed to delete directory: \(error.localizedDescription, privacy: .public)")
+            errorMessage = errorMsg
         }
     }
     

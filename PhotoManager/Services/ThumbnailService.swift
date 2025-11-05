@@ -49,7 +49,7 @@ class ThumbnailService: ObservableObject {
         }
     }
     
-    func generateThumbnailsForDirectory(_ directoryId: Int64) async throws {
+    func generateThumbnailsForDirectory(_ directoryId: Int64, regenerateAll: Bool = false) async throws {
         await MainActor.run {
             isGeneratingThumbnails = true
             thumbnailProgress = 0.0
@@ -63,7 +63,15 @@ class ThumbnailService: ObservableObject {
         }
         
         let photos = try databaseManager.getPhotosForDirectory(directoryId)
-        let photosWithoutThumbnails = photos.filter { !$0.hasThumbnail }
+        let photosWithoutThumbnails: [PhotoFile]
+        
+        if regenerateAll {
+            Self.logger.info("Regenerating all thumbnails for directory ID \(directoryId)")
+            photosWithoutThumbnails = photos
+        } else {
+            Self.logger.info("Generating thumbnails only for photos without thumbnails")
+            photosWithoutThumbnails = photos.filter { !$0.hasThumbnail }
+        }
         
         // Group photos by root directory to batch security-scoped access
         let photosByRoot = Dictionary(grouping: photosWithoutThumbnails) { $0.rootDirectoryId }

@@ -13,8 +13,8 @@ class FileScanningService: ObservableObject {
     @Published var scanProgress: Double = 0.0
     @Published var currentFile: String = ""
     
-    func scanDirectory(_ rootDirectory: RootDirectory) async throws {
-        Self.logger.info("Starting scan of directory: \(rootDirectory.path, privacy: .public)")
+    func scanDirectory(_ rootDirectory: RootDirectory, fastScan: Bool = false) async throws {
+        Self.logger.info("Starting scan of directory: \(rootDirectory.path, privacy: .public) (Fast scan: \(fastScan, privacy: .public))")
         
         // Restore security-scoped access from bookmark
         var directoryURL: URL? = nil
@@ -65,12 +65,19 @@ class FileScanningService: ObservableObject {
             }
         }
         
-        // Clear existing photos for this directory
-        if let directoryId = rootDirectory.id {
-            Self.logger.info("Clearing existing photos for directory ID: \(directoryId, privacy: .public)")
+        // Get existing photos for fast scan comparison
+        var existingPhotos: [String: PhotoFile] = [:]
+        if fastScan, let directoryId = rootDirectory.id {
+            Self.logger.info("Fast scan mode: Loading existing photos for directory ID: \(directoryId, privacy: .public)")
+            let photos = try databaseManager.getPhotosForDirectory(directoryId)
+            existingPhotos = Dictionary(uniqueKeysWithValues: photos.map { ($0.relativePath, $0) })
+            Self.logger.info("Loaded \(existingPhotos.count, privacy: .public) existing photos for comparison")
+        } else if !fastScan, let directoryId = rootDirectory.id {
+            // Full scan: Clear existing photos for this directory
+            Self.logger.info("Full scan mode: Clearing existing photos for directory ID: \(directoryId, privacy: .public)")
             try databaseManager.clearPhotosForDirectory(directoryId)
         } else {
-            Self.logger.warning("No directory ID available for clearing")
+            Self.logger.warning("No directory ID available")
         }
         
         // Get all image files in the directory
@@ -87,7 +94,7 @@ class FileScanningService: ObservableObject {
             
             Self.logger.info("Processing file \(index + 1, privacy: .public)/\(totalFiles, privacy: .public): \(URL(fileURLWithPath: filePath).lastPathComponent, privacy: .public)")
             do {
-                try await processImageFile(filePath, rootDirectory: rootDirectory)
+                try await processImageFile(filePath, rootDirectory: rootDirectory, existingPhotos: existingPhotos, fastScan: fastScan)
                 Self.logger.info("Successfully processed: \(URL(fileURLWithPath: filePath).lastPathComponent, privacy: .public)")
             } catch {
                 Self.logger.error("Error processing file \(filePath, privacy: .public): \(error.localizedDescription, privacy: .public)")
@@ -146,7 +153,7 @@ class FileScanningService: ObservableObject {
         return imageFiles
     }
     
-    private func processImageFile(_ filePath: String, rootDirectory: RootDirectory) async throws {
+    private func processImageFile(_ filePath: String, rootDirectory: RootDirectory, existingPhotos: [String: PhotoFile], fastScan: Bool) async throws {
         guard let rootDirectoryId = rootDirectory.id else {
             throw FileScanningError.invalidRootDirectory
         }
@@ -165,6 +172,15 @@ class FileScanningService: ObservableObject {
         // Calculate relative path
         let relativePath = String(filePath.dropFirst(rootDirectory.path.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        
+        // Fast scan: Check if file exists and hasn't changed
+        if fastScan, let existingPhoto = existingPhotos[relativePath] {
+            // Check if file size and modification date match
+            if existingPhoto.fileSize == fileSize && existingPhoto.modifiedAt == modifiedAt {
+                Self.logger.info("Fast scan: Skipping unchanged file \(fileName, privacy: .public)")
+                return
+            }
+        }
         
         // Calculate file hash
         let fileHash = try await calculateFileHash(filePath: filePath)

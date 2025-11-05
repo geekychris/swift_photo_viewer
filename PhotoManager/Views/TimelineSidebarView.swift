@@ -221,6 +221,7 @@ struct TimelinePeriodRowView: View {
         )
         .sheet(isPresented: $showingAllPhotos) {
             TimelinePhotoGridSheet(period: displayName, photos: photos)
+                .presentationSizing(.fitted)
         }
     }
 }
@@ -261,17 +262,62 @@ struct TimelinePhotoGridSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var selectedPhoto: PhotoFile?
+    @State private var thumbnailSize: CGFloat = 150
     
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 120, maximum: 200), spacing: 8)]
+        [GridItem(.adaptive(minimum: thumbnailSize, maximum: thumbnailSize + 100), spacing: 8)]
     }
     
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                Text(period)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                
+                Text("•")
+                    .foregroundColor(.secondary)
+                
+                Text("\(photos.count) photos")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Button("Done") {
+                    dismiss()
+                }
+            }
+            .padding()
+            
+            Divider()
+            
+            // Thumbnail size control
+            HStack {
+                Text("Thumbnail Size:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Slider(value: $thumbnailSize, in: 80...300, step: 20)
+                    .frame(width: 200)
+                
+                Text("\(Int(thumbnailSize))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(width: 40)
+                
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            
+            Divider()
+            
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 8) {
                     ForEach(photos) { photo in
-                        TimelineGridThumbnailView(photo: photo)
+                        TimelineGridThumbnailView(photo: photo, thumbnailSize: thumbnailSize)
                             .onTapGesture {
                                 selectedPhoto = photo
                             }
@@ -279,17 +325,9 @@ struct TimelinePhotoGridSheet: View {
                 }
                 .padding()
             }
-            .navigationTitle(period)
-            .navigationSubtitle("\(photos.count) photos")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
         }
-        .frame(minWidth: 600, minHeight: 500)
+        .frame(minWidth: 500, idealWidth: 900, maxWidth: .infinity,
+               minHeight: 400, idealHeight: 700, maxHeight: .infinity)
         .sheet(item: $selectedPhoto) { photo in
             PhotoDetailView(photo: photo)
         }
@@ -298,6 +336,7 @@ struct TimelinePhotoGridSheet: View {
 
 struct TimelineGridThumbnailView: View {
     let photo: PhotoFile
+    let thumbnailSize: CGFloat
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var thumbnailImage: NSImage?
     
@@ -318,14 +357,14 @@ struct TimelineGridThumbnailView: View {
                         )
                 }
             }
-            .frame(width: 150, height: 150)
+            .frame(width: thumbnailSize, height: thumbnailSize)
             .clipped()
             .cornerRadius(6)
             
             Text(photo.fileName)
                 .font(.caption2)
                 .lineLimit(1)
-                .frame(maxWidth: 150)
+                .frame(maxWidth: thumbnailSize)
         }
         .onAppear {
             thumbnailImage = photoLibrary.getThumbnailImage(for: photo)

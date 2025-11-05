@@ -51,6 +51,8 @@ struct DirectoryRowView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var photos: [PhotoFile] = []
     @State private var subdirectories: [String: [PhotoFile]] = [:]
+    @State private var showingScanOptions = false
+    @State private var showingDeleteAlert = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -81,15 +83,48 @@ struct DirectoryRowView: View {
                 
                 Spacer()
                 
-                Button {
-                    print("🔄 DirectoryRowView: Scan button clicked for directory: \(directory.name)")
-                    onScan()
+                Menu {
+                    Button {
+                        print("🔄 DirectoryRowView: Fast scan clicked for directory: \(directory.name)")
+                        Task {
+                            await photoLibrary.scanDirectory(directory, fastScan: true, regenerateThumbnails: false)
+                        }
+                    } label: {
+                        Label("Fast Scan", systemImage: "bolt.fill")
+                    }
+                    
+                    Button {
+                        print("🔄 DirectoryRowView: Full scan clicked for directory: \(directory.name)")
+                        Task {
+                            await photoLibrary.scanDirectory(directory, fastScan: false, regenerateThumbnails: false)
+                        }
+                    } label: {
+                        Label("Full Scan", systemImage: "arrow.clockwise")
+                    }
+                    
+                    Button {
+                        print("🖼 DirectoryRowView: Regenerate all thumbnails clicked for directory: \(directory.name)")
+                        Task {
+                            await photoLibrary.scanDirectory(directory, fastScan: false, regenerateThumbnails: true)
+                        }
+                    } label: {
+                        Label("Full Scan + Regenerate Thumbnails", systemImage: "photo.on.rectangle.angled")
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive) {
+                        showingDeleteAlert = true
+                    } label: {
+                        Label("Remove Directory", systemImage: "trash")
+                    }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Image(systemName: "ellipsis.circle")
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .help("Rescan directory")
+                .help("Directory options")
+                .menuStyle(BorderlessButtonMenuStyle())
             }
             
             if isExpanded {
@@ -120,6 +155,14 @@ struct DirectoryRowView: View {
         }
         .onChange(of: photoLibrary.rootDirectories) {
             loadPhotos()
+        }
+        .alert("Remove Directory", isPresented: $showingDeleteAlert) {
+            Button("Remove", role: .destructive) {
+                photoLibrary.deleteRootDirectory(directory)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will remove \"\(directory.name)\" from the app and delete all associated data. Your actual photo files will not be affected. This action cannot be undone.")
         }
     }
     
