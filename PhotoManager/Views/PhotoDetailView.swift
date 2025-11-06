@@ -85,10 +85,16 @@ struct PhotoDetailView: View {
                         // User metadata
                         MetadataSectionView(title: "Description & Tags") {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Description")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
+                                HStack {
+                                    Text("Description")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                    
+                                    Spacer()
+                                    
+                                    SpeechInputButton(text: $userDescription)
+                                }
                                 
                                 TextEditor(text: $userDescription)
                                     .frame(height: 80)

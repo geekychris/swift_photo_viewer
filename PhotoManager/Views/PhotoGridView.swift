@@ -7,6 +7,7 @@ struct PhotoGridView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var selectedPhoto: PhotoFile?
     let filterDirectoryId: Int64?
+    let filterSubdirectoryPath: String?
     @State private var photos: [PhotoFile] = []
     @State private var displayedPhotos: [PhotoFile] = []
     @State private var itemsPerPage = 50
@@ -76,6 +77,9 @@ struct PhotoGridView: View {
         .onChange(of: filterDirectoryId) {
             loadPhotos()
         }
+        .onChange(of: filterSubdirectoryPath) {
+            loadPhotos()
+        }
         .onChange(of: photoLibrary.thumbnailsUpdated) {
             logger.info("Thumbnails updated, reloading photos")
             loadPhotos()
@@ -96,8 +100,24 @@ struct PhotoGridView: View {
         
         if let filterId = filterDirectoryId {
             // Load photos from specific directory
-            logger.info("Loading photos from directory ID: \(filterId, privacy: .public)")
-            allPhotos = photoLibrary.getPhotosForDirectory(filterId)
+            logger.info("Loading photos from directory ID: \(filterId, privacy: .public), subdirectory: \(String(describing: filterSubdirectoryPath), privacy: .public)")
+            var directoryPhotos = photoLibrary.getPhotosForDirectory(filterId)
+            
+            // If subdirectory is specified, filter to only that subdirectory and its children
+            if let subdir = filterSubdirectoryPath {
+                directoryPhotos = directoryPhotos.filter { photo in
+                    let pathComponents = photo.relativePath.split(separator: "/")
+                    if pathComponents.count > 1 {
+                        let firstComponent = String(pathComponents[0])
+                        return firstComponent == subdir
+                    } else {
+                        return subdir == "Root"
+                    }
+                }
+                logger.info("Filtered to \(directoryPhotos.count, privacy: .public) photos in subdirectory: \(subdir, privacy: .public)")
+            }
+            
+            allPhotos = directoryPhotos
             logger.info("Loaded \(allPhotos.count, privacy: .public) photos from directory ID: \(filterId, privacy: .public)")
         } else {
             // Load all photos from all directories

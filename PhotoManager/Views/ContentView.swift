@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showingDirectoryPicker = false
     @State private var selectedPhoto: PhotoFile?
     @State private var selectedDirectoryId: Int64?
+    @State private var selectedSubdirectoryPath: String?
     @State private var searchText = ""
     @State private var showingSearch = false
     @State private var showingFilters = false
@@ -222,13 +223,23 @@ struct ContentView: View {
                 Group {
                     switch selectedTab {
                     case 0:
-                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId, sidebarWidth: $sidebarWidth)
+                        DirectorySidebarView(
+                            selectedDirectoryId: $selectedDirectoryId,
+                            selectedSubdirectoryPath: $selectedSubdirectoryPath,
+                            sidebarWidth: $sidebarWidth,
+                            selectedPhoto: $selectedPhoto
+                        )
                     case 1:
                         TimelineSidebarView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
                     case 2:
                         DuplicatesSidebarView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
                     default:
-                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId, sidebarWidth: $sidebarWidth)
+                        DirectorySidebarView(
+                            selectedDirectoryId: $selectedDirectoryId,
+                            selectedSubdirectoryPath: $selectedSubdirectoryPath,
+                            sidebarWidth: $sidebarWidth,
+                            selectedPhoto: $selectedPhoto
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -269,7 +280,11 @@ struct ContentView: View {
                     selectedPhoto: $selectedPhoto
                 )
             } else {
-                PhotoGridView(selectedPhoto: $selectedPhoto, filterDirectoryId: selectedDirectoryId)
+                PhotoGridView(
+                    selectedPhoto: $selectedPhoto,
+                    filterDirectoryId: selectedDirectoryId,
+                    filterSubdirectoryPath: selectedSubdirectoryPath
+                )
             }
         }
         .fileImporter(

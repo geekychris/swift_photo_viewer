@@ -3,7 +3,9 @@ import SwiftUI
 struct DirectorySidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var selectedDirectoryId: Int64?
+    @Binding var selectedSubdirectoryPath: String?
     @Binding var sidebarWidth: CGFloat
+    @Binding var selectedPhoto: PhotoFile?
     @State private var expandedDirectories: Set<Int64> = []
     
     var body: some View {
@@ -14,6 +16,9 @@ struct DirectorySidebarView: View {
                     DirectoryRowView(
                         directory: directory,
                         isExpanded: expandedDirectories.contains(directory.id ?? -1),
+                        selectedDirectoryId: $selectedDirectoryId,
+                        selectedSubdirectoryPath: $selectedSubdirectoryPath,
+                        selectedPhoto: $selectedPhoto,
                         onToggleExpanded: {
                             toggleExpansion(for: directory)
                         },
@@ -23,9 +28,10 @@ struct DirectorySidebarView: View {
                             }
                         }
                     )
-                    .background(selectedDirectoryId == directory.id ? Color.accentColor.opacity(0.2) : Color.clear)
+                    .background(selectedDirectoryId == directory.id && selectedSubdirectoryPath == nil ? Color.accentColor.opacity(0.2) : Color.clear)
                     .onTapGesture {
                         selectedDirectoryId = directory.id
+                        selectedSubdirectoryPath = nil // Select root directory
                     }
                     
                         Divider()
@@ -56,14 +62,26 @@ struct DirectorySidebarView: View {
 struct DirectoryRowView: View {
     let directory: RootDirectory
     let isExpanded: Bool
+    @Binding var selectedDirectoryId: Int64?
+    @Binding var selectedSubdirectoryPath: String?
+    @Binding var selectedPhoto: PhotoFile?
     let onToggleExpanded: () -> Void
     let onScan: () -> Void
     
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var photos: [PhotoFile] = []
     @State private var subdirectories: [String: [PhotoFile]] = [:]
+    @State private var expandedSubdirectories: Set<String> = []
     @State private var showingScanOptions = false
     @State private var showingDeleteAlert = false
+    
+    private var fileTypeStats: [String: Int] {
+        let grouped = Dictionary(grouping: photos) { photo -> String in
+            let ext = (photo.fileName as NSString).pathExtension.uppercased()
+            return ext.isEmpty ? "Unknown" : ext
+        }
+        return grouped.mapValues { $0.count }
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -77,8 +95,35 @@ struct DirectoryRowView: View {
                 .buttonStyle(PlainButtonStyle())
                 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(directory.name)
-                        .fontWeight(.medium)
+                    HStack {
+                        Text(directory.name)
+                            .fontWeight(.medium)
+                        
+                        Text("\(photos.count) files")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 4)
+                    }
+                    
+                    // File type breakdown
+                    if !fileTypeStats.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(Array(fileTypeStats.keys.sorted()), id: \.self) { ext in
+                                HStack(spacing: 2) {
+                                    Text(ext)
+                                        .font(.caption2)
+                                        .foregroundColor(.blue)
+                                    Text("\(fileTypeStats[ext] ?? 0)")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(3)
+                            }
+                        }
+                    }
                     
                     Text(directory.path)
                         .font(.caption)
@@ -144,26 +189,29 @@ struct DirectoryRowView: View {
             }
             
             if isExpanded {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(subdirectories.keys.sorted(), id: \.self) { subdirectory in
-                        HStack {
-                            Image(systemName: "folder.fill")
-                                .foregroundColor(.blue)
-                                .font(.caption)
-                            
-                            Text(subdirectory)
-                                .font(.caption)
-                                .foregroundColor(.primary)
-                            
-                            Spacer()
-                            
-                            Text("\(subdirectories[subdirectory]?.count ?? 0)")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.leading, 20)
+                        SubdirectoryRowView(
+                            subdirectory: subdirectory,
+                            photos: subdirectories[subdirectory] ?? [],
+                            isExpanded: expandedSubdirectories.contains(subdirectory),
+                            isSelected: selectedDirectoryId == directory.id && selectedSubdirectoryPath == subdirectory,
+                            selectedPhoto: $selectedPhoto,
+                            onToggle: {
+                                if expandedSubdirectories.contains(subdirectory) {
+                                    expandedSubdirectories.remove(subdirectory)
+                                } else {
+                                    expandedSubdirectories.insert(subdirectory)
+                                }
+                            },
+                            onSelect: {
+                                selectedDirectoryId = directory.id
+                                selectedSubdirectoryPath = subdirectory
+                            }
+                        )
                     }
                 }
+                .padding(.leading, 20)
             }
         }
         .frame(maxWidth: .infinity)
@@ -205,5 +253,81 @@ struct DirectoryRowView: View {
             }
         }
         print("🗺 DirectoryRowView: Grouped into \(subdirectories.count) subdirectories")
+    }
+}
+
+struct SubdirectoryRowView: View {
+    let subdirectory: String
+    let photos: [PhotoFile]
+    let isExpanded: Bool
+    let isSelected: Bool
+    @Binding var selectedPhoto: PhotoFile?
+    let onToggle: () -> Void
+    let onSelect: () -> Void
+    @EnvironmentObject var photoLibrary: PhotoLibrary
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Button(action: onToggle) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        
+                        Image(systemName: "folder.fill")
+                            .foregroundColor(.blue)
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                Button(action: onSelect) {
+                    HStack {
+                        Text(subdirectory)
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                        
+                        Spacer()
+                        
+                        Text("\(photos.count)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+            .cornerRadius(4)
+            
+            if isExpanded {
+                // Show thumbnails in a grid
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 40, maximum: 60), spacing: 4)], spacing: 4) {
+                    ForEach(photos.prefix(20)) { photo in
+                        ReusableHoverThumbnail(photo: photo, size: 50, onTap: {
+                            selectedPhoto = photo
+                        })
+                        .environmentObject(photoLibrary)
+                    }
+                    
+                    if photos.count > 20 {
+                        VStack {
+                            Image(systemName: "ellipsis")
+                                .foregroundColor(.secondary)
+                            Text("+\(photos.count - 20)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(width: 50, height: 50)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(4)
+                    }
+                }
+                .padding(.leading, 20)
+                .padding(.top, 4)
+            }
+        }
     }
 }

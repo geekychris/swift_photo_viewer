@@ -297,6 +297,7 @@ struct DirectoryDuplicateRowView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingDeleteAllAlert = false
     @State private var otherDirectoriesWithSameFiles: [String: Int] = [:]
+    @State private var duplicatesInSameDirectory: Int = 0
     @State private var isAnalyzing = false
     @State private var analysisError: String?
     
@@ -392,6 +393,27 @@ struct DirectoryDuplicateRowView: View {
                             .font(.caption2)
                         }
                         .padding(.leading, 20)
+                    } else if duplicatesInSameDirectory > 0 && otherDirectoriesWithSameFiles.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(duplicatesInSameDirectory) files have duplicates within this directory")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                            Text("These files are duplicated internally (not found in other directories)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.leading, 20)
+                        
+                        Divider()
+                            .padding(.vertical, 4)
+                        
+                        // Show individual files
+                        DisclosureGroup("View \(dirInfo.duplicateFileCount) duplicate files") {
+                            ForEach(dirInfo.files) { file in
+                                CompactDuplicateFileRow(file: file, selectedPhoto: $selectedPhoto)
+                            }
+                        }
+                        .padding(.leading, 20)
                     } else if otherDirectoriesWithSameFiles.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("No duplicate locations found")
@@ -445,7 +467,7 @@ struct DirectoryDuplicateRowView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .onChange(of: isExpanded) { _, newValue in
-            if newValue && otherDirectoriesWithSameFiles.isEmpty && !isAnalyzing {
+            if newValue && otherDirectoriesWithSameFiles.isEmpty && duplicatesInSameDirectory == 0 && !isAnalyzing {
                 print("🎯 Directory expanded, starting analysis")
                 Task {
                     await findOtherDirectories()
@@ -478,8 +500,9 @@ struct DirectoryDuplicateRowView: View {
         print("📊 Total duplicate groups: \(duplicateGroups.count)")
         
         // Run analysis in background
-        let result = await Task.detached(priority: .userInitiated) { () -> [String: Int] in
+        let result = await Task.detached(priority: .userInitiated) { () -> (otherDirs: [String: Int], sameDirCount: Int) in
             var directoryCount: [String: Int] = [:]
+            var sameDirectoryDuplicates = 0
             
             // Create a hash map for faster lookups
             let duplicateGroupsByHash = Dictionary(grouping: duplicateGroups, by: { $0.fileHash })
@@ -496,6 +519,7 @@ struct DirectoryDuplicateRowView: View {
                 if let groups = duplicateGroupsByHash[file.fileHash], let duplicateGroup = groups.first {
                     print("✅ Found duplicate group for \(file.fileName) with \(duplicateGroup.files.count) locations")
                     
+                    var foundInOtherDir = false
                     for otherFile in duplicateGroup.files {
                         // Get the directory path for this other file
                         let rootDir = rootDirectories.first(where: { $0.id == otherFile.rootDirectoryId })
@@ -512,22 +536,30 @@ struct DirectoryDuplicateRowView: View {
                             continue
                         }
                         
+                        foundInOtherDir = true
                         // Count how many files from our directory exist in this other directory
                         directoryCount[fullDirPath, default: 0] += 1
                         print("📍 Found duplicate in: \(fullDirPath)")
+                    }
+                    
+                    // If this file has duplicates but none in other directories, it's a same-directory duplicate
+                    if !foundInOtherDir {
+                        sameDirectoryDuplicates += 1
+                        print("🔁 File \(file.fileName) has duplicates only within same directory")
                     }
                 } else {
                     print("❌ No duplicate group found for \(file.fileName) with hash \(file.fileHash)")
                 }
             }
             
-            print("✨ Analysis complete. Found \(directoryCount.count) other directories")
-            return directoryCount
+            print("✨ Analysis complete. Found \(directoryCount.count) other directories, \(sameDirectoryDuplicates) same-dir duplicates")
+            return (directoryCount, sameDirectoryDuplicates)
         }.value
         
         await MainActor.run {
-            print("📥 Updating UI with \(result.count) directories")
-            self.otherDirectoriesWithSameFiles = result
+            print("📥 Updating UI with \(result.otherDirs.count) directories, \(result.sameDirCount) same-dir duplicates")
+            self.otherDirectoriesWithSameFiles = result.otherDirs
+            self.duplicatesInSameDirectory = result.sameDirCount
             self.isAnalyzing = false
         }
     }
