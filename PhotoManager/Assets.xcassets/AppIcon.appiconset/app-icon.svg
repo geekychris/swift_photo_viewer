@@ -1,0 +1,87 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Rounded square background -->
+  <rect width="1024" height="1024" rx="180" fill="url(#skyGradient)"/>
+  
+  <!-- Gradients -->
+  <defs>
+    <!-- Sky gradient -->
+    <linearGradient id="skyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
+      <stop offset="60%" style="stop-color:#87CEEB;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#B0D8F0;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Mountain gradient -->
+    <linearGradient id="mountainGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#2C5F2D;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1A3A1B;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Lens gradient -->
+    <radialGradient id="lensGradient">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.3" />
+      <stop offset="70%" style="stop-color:#ffffff;stop-opacity:0.15" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0.05" />
+    </radialGradient>
+    
+    <!-- Lens ring gradient -->
+    <linearGradient id="ringGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.9" />
+      <stop offset="50%" style="stop-color:#e0e0e0;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0.9" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Sun -->
+  <circle cx="780" cy="220" r="80" fill="#FDB813" opacity="0.9"/>
+  <circle cx="780" cy="220" r="65" fill="#FFD700" opacity="0.7"/>
+  
+  <!-- Background mountains -->
+  <path d="M 0 600 L 200 400 L 400 500 L 600 350 L 800 450 L 1024 380 L 1024 1024 L 0 1024 Z" 
+        fill="#4A7C59" opacity="0.6"/>
+  
+  <!-- Mid mountains -->
+  <path d="M 0 700 L 300 450 L 500 550 L 700 400 L 900 500 L 1024 450 L 1024 1024 L 0 1024 Z" 
+        fill="url(#mountainGradient)" opacity="0.8"/>
+  
+  <!-- Foreground mountains -->
+  <path d="M 0 800 L 250 600 L 450 680 L 650 550 L 850 650 L 1024 580 L 1024 1024 L 0 1024 Z" 
+        fill="#1A3A1B"/>
+  
+  <!-- Trees silhouettes -->
+  <polygon points="150,750 170,650 190,750" fill="#0D1F0E" opacity="0.8"/>
+  <polygon points="280,780 295,700 310,780" fill="#0D1F0E" opacity="0.8"/>
+  <polygon points="520,720 540,640 560,720" fill="#0D1F0E" opacity="0.7"/>
+  <polygon points="750,760 770,680 790,760" fill="#0D1F0E" opacity="0.8"/>
+  
+  <!-- Camera Lens Overlay -->
+  <!-- Outer ring -->
+  <circle cx="512" cy="512" r="320" fill="none" stroke="url(#ringGradient)" stroke-width="20" opacity="0.85"/>
+  
+  <!-- Inner rings -->
+  <circle cx="512" cy="512" r="290" fill="none" stroke="#ffffff" stroke-width="3" opacity="0.5"/>
+  <circle cx="512" cy="512" r="260" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.4"/>
+  
+  <!-- Lens glass with gradient -->
+  <circle cx="512" cy="512" r="240" fill="url(#lensGradient)"/>
+  
+  <!-- Aperture blades -->
+  <g opacity="0.3">
+    <path d="M 512 272 L 512 400" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 512 624 L 512 752" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 272 512 L 400 512" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 624 512 L 752 512" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 342 342 L 432 432" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 592 592 L 682 682" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 682 342 L 592 432" stroke="#ffffff" stroke-width="4"/>
+    <path d="M 432 592 L 342 682" stroke="#ffffff" stroke-width="4"/>
+  </g>
+  
+  <!-- Lens reflection -->
+  <ellipse cx="420" cy="420" rx="80" ry="60" fill="#ffffff" opacity="0.4" transform="rotate(-30 420 420)"/>
+  <ellipse cx="380" cy="380" rx="40" ry="30" fill="#ffffff" opacity="0.6" transform="rotate(-30 380 380)"/>
+  
+  <!-- Center circle -->
+  <circle cx="512" cy="512" r="80" fill="none" stroke="#ffffff" stroke-width="6" opacity="0.4"/>
+  <circle cx="512" cy="512" r="60" fill="#000000" opacity="0.15"/>
+</svg>

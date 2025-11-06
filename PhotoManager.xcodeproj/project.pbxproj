@@ -23,6 +23,7 @@
 		1A000022293AB11000000000 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000021293AB11000000000 /* PhotoDetailView.swift */; };
 		1A000024293AB11000000000 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000023293AB11000000000 /* SettingsView.swift */; };
 		1A000026293AB14000000000 /* SQLite in Frameworks */ = {isa = PBXBuildFile; productRef = 1A000025293AB14000000000 /* SQLite */; };
+		1A000028293AB15000000000 /* DatabaseDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000027293AB15000000000 /* DatabaseDebugView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +43,7 @@
 		1A00001F293AB11000000000 /* PhotoGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoGridView.swift; sourceTree = "<group>"; };
 		1A000021293AB11000000000 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
 		1A000023293AB11000000000 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		1A000027293AB15000000000 /* DatabaseDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseDebugView.swift; sourceTree = "<group>"; };
 		1A0000FD293AB0F000000000 /* PhotoManager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PhotoManager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -93,6 +95,7 @@
 				1A00001F293AB11000000000 /* PhotoGridView.swift */,
 				1A000021293AB11000000000 /* PhotoDetailView.swift */,
 				1A000023293AB11000000000 /* SettingsView.swift */,
+				1A000027293AB15000000000 /* DatabaseDebugView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -215,6 +218,7 @@
 				1A000020293AB11000000000 /* PhotoGridView.swift in Sources */,
 				1A000022293AB11000000000 /* PhotoDetailView.swift in Sources */,
 				1A000024293AB11000000000 /* SettingsView.swift in Sources */,
+				1A000028293AB15000000000 /* DatabaseDebugView.swift in Sources */,
 				1A000003293AB0F000000000 /* ContentView.swift in Sources */,
 				1A000001293AB0F000000000 /* PhotoManagerApp.swift in Sources */,
 			);
@@ -276,7 +280,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -333,7 +337,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
