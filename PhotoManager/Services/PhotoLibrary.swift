@@ -11,6 +11,8 @@ class PhotoLibrary: ObservableObject {
     
     @Published var rootDirectories: [RootDirectory] = []
     @Published var duplicateGroups: [DuplicateGroup] = []
+    @Published var directoryDuplicates: [DirectoryDuplicateInfo] = []
+    @Published var completeDuplicateDirectories: [CompleteDuplicateDirectory] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var thumbnailsUpdated = Date() // Triggers UI refresh when thumbnails are generated
@@ -134,6 +136,8 @@ class PhotoLibrary: ObservableObject {
     func loadDuplicates() {
         do {
             duplicateGroups = try databaseManager.findDuplicates()
+            directoryDuplicates = try databaseManager.findDuplicatesByDirectory()
+            completeDuplicateDirectories = try databaseManager.findCompleteDuplicateDirectories()
         } catch {
             errorMessage = "Failed to load duplicates: \(error.localizedDescription)"
         }
@@ -150,6 +154,90 @@ class PhotoLibrary: ObservableObject {
         } catch {
             errorMessage = "Failed to delete photo: \(error.localizedDescription)"
         }
+    }
+    
+    func movePhotoToTrash(_ photo: PhotoFile) {
+        print("🗑️ PhotoLibrary: Moving photo to trash: \(photo.fileName)")
+        
+        do {
+            // Get the full file path
+            let rootDir = rootDirectories.first(where: { $0.id == photo.rootDirectoryId })
+            guard let rootPath = rootDir?.path else {
+                throw DatabaseError.queryFailed("Root directory not found for photo")
+            }
+            
+            let fullPath = (rootPath as NSString).appendingPathComponent(photo.relativePath)
+            let fileURL = URL(fileURLWithPath: fullPath)
+            
+            print("   Full path: \(fullPath)")
+            
+            // Check if file exists
+            if FileManager.default.fileExists(atPath: fullPath) {
+                // Move to trash
+                try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
+                print("✅ PhotoLibrary: Moved file to trash")
+            } else {
+                print("⚠️ PhotoLibrary: File doesn't exist, will still remove from database")
+            }
+            
+            // Remove from database
+            if let photoId = photo.id {
+                try databaseManager.deletePhoto(photoId)
+                print("✅ PhotoLibrary: Removed from database")
+            }
+            
+            // Refresh duplicates
+            loadDuplicates()
+            objectWillChange.send()
+            
+        } catch {
+            errorMessage = "Failed to move photo to trash: \(error.localizedDescription)"
+            print("❌ PhotoLibrary: \(errorMessage!)")
+        }
+    }
+    
+    func deleteAllDuplicatesInDirectory(_ dirInfo: DirectoryDuplicateInfo) {
+        print("🗑️ PhotoLibrary: Deleting all \(dirInfo.duplicateFileCount) duplicates in: \(dirInfo.fullPath)")
+        
+        var successCount = 0
+        var failureCount = 0
+        
+        for file in dirInfo.files {
+            do {
+                // Get full path
+                let rootDir = rootDirectories.first(where: { $0.id == file.rootDirectoryId })
+                guard let rootPath = rootDir?.path else {
+                    print("⚠️ Root directory not found for: \(file.fileName)")
+                    failureCount += 1
+                    continue
+                }
+                
+                let fullPath = (rootPath as NSString).appendingPathComponent(file.relativePath)
+                let fileURL = URL(fileURLWithPath: fullPath)
+                
+                // Move to trash if exists
+                if FileManager.default.fileExists(atPath: fullPath) {
+                    try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
+                } else {
+                    print("⚠️ File doesn't exist: \(file.fileName)")
+                }
+                
+                // Remove from database
+                if let photoId = file.id {
+                    try databaseManager.deletePhoto(photoId)
+                    successCount += 1
+                }
+            } catch {
+                print("❌ Failed to delete \(file.fileName): \(error.localizedDescription)")
+                failureCount += 1
+            }
+        }
+        
+        print("✅ PhotoLibrary: Deleted \(successCount) files, \(failureCount) failures")
+        
+        // Refresh duplicates
+        loadDuplicates()
+        objectWillChange.send()
     }
     
     func deleteRootDirectory(_ directory: RootDirectory) {
@@ -317,5 +405,132 @@ class PhotoLibrary: ObservableObject {
             errorMessage = "Failed to search photos: \(error.localizedDescription)"
             return []
         }
+    }
+    
+    func exportDuplicatesToCSV(includeDirectoryView: Bool = false) -> URL? {
+        do {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let timestamp = dateFormatter.string(from: Date())
+            let filename = "duplicates_export_\(timestamp).csv"
+            
+            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let fileURL = documentsPath.appendingPathComponent(filename)
+            
+            var csvContent = ""
+            
+            if includeDirectoryView {
+                // Export directory-based duplicates
+                csvContent += "Directory Path,Total Files,Duplicate Files,Duplicate %,Total Size,Wasted Size\n"
+                
+                for dirInfo in directoryDuplicates {
+                    let totalSizeStr = ByteCountFormatter().string(fromByteCount: dirInfo.totalSize)
+                    let wastedSizeStr = ByteCountFormatter().string(fromByteCount: dirInfo.wastedSize)
+                    let duplicatePercent = String(format: "%.1f", dirInfo.duplicatePercentage)
+                    
+                    csvContent += "\"\(dirInfo.directoryPath)\",\(dirInfo.fileCount),\(dirInfo.duplicateFileCount),\(duplicatePercent)%,\(totalSizeStr),\(wastedSizeStr)\n"
+                }
+                
+                csvContent += "\n\nComplete Duplicate Directories\n"
+                csvContent += "Primary Directory,Duplicate Directories,File Count,Total Size\n"
+                
+                for completeDir in completeDuplicateDirectories {
+                    let totalSizeStr = ByteCountFormatter().string(fromByteCount: completeDir.totalSize)
+                    let dupDirs = completeDir.duplicateDirectories.map { $0.fullPath }.joined(separator: "; ")
+                    
+                    csvContent += "\"\(completeDir.primaryDirectory.fullPath)\",\"\(dupDirs)\",\(completeDir.fileCount),\(totalSizeStr)\n"
+                }
+            } else {
+                // Export file-based duplicates
+                csvContent += "File Hash,Duplicate Count,Total Size,File Name,Locations\n"
+                
+                for group in duplicateGroups {
+                    let totalSizeStr = ByteCountFormatter().string(fromByteCount: group.totalSize)
+                    let fileName = group.files.first?.fileName ?? ""
+                    let locations = group.files.map { $0.relativePath }.joined(separator: "; ")
+                    
+                    csvContent += "\"\(group.fileHash)\",\(group.duplicateCount),\(totalSizeStr),\"\(fileName)\",\"\(locations)\"\n"
+                }
+            }
+            
+            try csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+            print("✅ PhotoLibrary: Exported duplicates to \(fileURL.path)")
+            return fileURL
+        } catch {
+            errorMessage = "Failed to export CSV: \(error.localizedDescription)"
+            print("❌ PhotoLibrary: \(errorMessage!)")
+            return nil
+        }
+    }
+    
+    func deleteDuplicateDirectory(_ directoryPath: String) {
+        do {
+            let deletedCount = try databaseManager.deletePhotosInDirectory(directoryPath)
+            print("✅ PhotoLibrary: Deleted \(deletedCount) photos from directory: \(directoryPath)")
+            loadDuplicates()
+            objectWillChange.send()
+        } catch {
+            errorMessage = "Failed to delete directory: \(error.localizedDescription)"
+            print("❌ PhotoLibrary: \(errorMessage!)")
+        }
+    }
+    
+    func moveDirectoryToTrash(_ directoryInfo: DirectoryInfo) {
+        print("🗑️ PhotoLibrary: Starting deletion process for: \(directoryInfo.fullPath)")
+        print("   Directory contains \(directoryInfo.files.count) files")
+        
+        var filesMovedToTrash = false
+        
+        // Try to move files to trash
+        do {
+            try databaseManager.moveDirectoryToTrash(directoryInfo.fullPath)
+            print("✅ PhotoLibrary: Moved directory to trash: \(directoryInfo.fullPath)")
+            filesMovedToTrash = true
+        } catch {
+            // Directory might not exist on disk anymore
+            print("⚠️ PhotoLibrary: Could not move to trash: \(error.localizedDescription)")
+            print("   Will still remove from database")
+        }
+        
+        // Remove specific photos from database by their IDs
+        var deletedCount = 0
+        var failedCount = 0
+        
+        print("💾 PhotoLibrary: Removing \(directoryInfo.files.count) files from database...")
+        
+        for (index, file) in directoryInfo.files.enumerated() {
+            if let photoId = file.id {
+                do {
+                    try databaseManager.deletePhoto(photoId)
+                    deletedCount += 1
+                } catch {
+                    failedCount += 1
+                    print("⚠️ PhotoLibrary: Failed to delete photo ID \(photoId) (\(file.fileName)): \(error.localizedDescription)")
+                }
+            } else {
+                print("⚠️ PhotoLibrary: File has no ID, skipping: \(file.fileName)")
+                failedCount += 1
+            }
+            
+            // Progress indicator for large directories
+            if (index + 1) % 100 == 0 {
+                print("   Progress: \(index + 1)/\(directoryInfo.files.count) files processed")
+            }
+        }
+        
+        print("✅ PhotoLibrary: Removed \(deletedCount) photos from database")
+        if failedCount > 0 {
+            print("⚠️ PhotoLibrary: Failed to remove \(failedCount) photos")
+        }
+        
+        // Reload duplicates to reflect changes
+        print("🔄 PhotoLibrary: Reloading duplicate analysis...")
+        loadDuplicates()
+        
+        // Force UI refresh
+        objectWillChange.send()
+        
+        print("✅ PhotoLibrary: Database refreshed after deletion")
+        print("📊 PhotoLibrary: Current state - \(duplicateGroups.count) duplicate groups, \(completeDuplicateDirectories.count) complete duplicate directories")
     }
 }

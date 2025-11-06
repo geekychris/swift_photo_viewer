@@ -3,27 +3,38 @@ import SwiftUI
 struct DirectorySidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var selectedDirectoryId: Int64?
+    @Binding var sidebarWidth: CGFloat
     @State private var expandedDirectories: Set<Int64> = []
     
     var body: some View {
-        List(selection: $selectedDirectoryId) {
-            ForEach(photoLibrary.rootDirectories) { directory in
-                DirectoryRowView(
-                    directory: directory,
-                    isExpanded: expandedDirectories.contains(directory.id ?? -1),
-                    onToggleExpanded: {
-                        toggleExpansion(for: directory)
-                    },
-                    onScan: {
-                        Task {
-                            await photoLibrary.scanDirectory(directory)
+        ScrollView {
+            VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
+                        ForEach(photoLibrary.rootDirectories) { directory in
+                    DirectoryRowView(
+                        directory: directory,
+                        isExpanded: expandedDirectories.contains(directory.id ?? -1),
+                        onToggleExpanded: {
+                            toggleExpansion(for: directory)
+                        },
+                        onScan: {
+                            Task {
+                                await photoLibrary.scanDirectory(directory)
+                            }
                         }
+                    )
+                    .background(selectedDirectoryId == directory.id ? Color.accentColor.opacity(0.2) : Color.clear)
+                    .onTapGesture {
+                        selectedDirectoryId = directory.id
                     }
-                )
-                .tag(directory.id ?? -1)
-            }
+                    
+                        Divider()
+                    }
+                }
+                .frame(width: sidebarWidth - 20)
+                .padding(.horizontal, 10)
         }
-        .listStyle(SidebarListStyle())
+    }
     }
     
     private func toggleExpansion(for directory: RootDirectory) {
@@ -56,7 +67,7 @@ struct DirectoryRowView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            HStack(spacing: 0) {
                 Button {
                     onToggleExpanded()
                 } label: {
@@ -81,6 +92,11 @@ struct DirectoryRowView: View {
                     }
                 }
                 
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            HStack {
                 Spacer()
                 
                 Menu {
@@ -150,6 +166,9 @@ struct DirectoryRowView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
         .onAppear {
             loadPhotos()
         }

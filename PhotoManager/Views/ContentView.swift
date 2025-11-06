@@ -16,9 +16,10 @@ struct ContentView: View {
     @State private var maxAperture: Double?
     @State private var minISO: Int?
     @State private var maxISO: Int?
+    @State private var sidebarWidth: CGFloat = 500
     
     var body: some View {
-        NavigationSplitView {
+        ResizableSplitView(minSidebarWidth: 300, maxSidebarWidth: 2000, sidebarWidth: $sidebarWidth) {
             // Sidebar
             VStack(spacing: 0) {
                 // Header
@@ -221,15 +222,16 @@ struct ContentView: View {
                 Group {
                     switch selectedTab {
                     case 0:
-                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId)
+                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId, sidebarWidth: $sidebarWidth)
                     case 1:
-                        TimelineSidebarView()
+                        TimelineSidebarView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
                     case 2:
-                        DuplicatesSidebarView()
+                        DuplicatesSidebarView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
                     default:
-                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId)
+                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId, sidebarWidth: $sidebarWidth)
                     }
                 }
+                .frame(maxWidth: .infinity)
                 
                 Spacer()
                 
@@ -252,7 +254,6 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
             }
-            .frame(minWidth: 300, maxWidth: 400)
         } detail: {
             // Main content area
             if showingSearch {

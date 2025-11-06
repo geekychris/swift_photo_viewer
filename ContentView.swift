@@ -1,5 +1,5 @@
 import SwiftUI
-//foo
+
 struct ContentView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var selectedTab = 0
@@ -9,16 +9,17 @@ struct ContentView: View {
     @State private var searchText = ""
     @State private var showingSearch = false
     @State private var showingFilters = false
-    @State private var filterStartDate: Date?
-    @State private var filterEndDate: Date?
-    @State private var filterCamera = ""
-    @State private var filterMinAperture: Double?
-    @State private var filterMaxAperture: Double?
-    @State private var filterMinISO: Int?
-    @State private var filterMaxISO: Int?
+    @State private var startDate: Date?
+    @State private var endDate: Date?
+    @State private var selectedCamera: String = ""
+    @State private var minAperture: Double?
+    @State private var maxAperture: Double?
+    @State private var minISO: Int?
+    @State private var maxISO: Int?
+    @State private var sidebarWidth: CGFloat = 500
     
     var body: some View {
-        NavigationSplitView {
+        ResizableSplitView(minSidebarWidth: 300, maxSidebarWidth: 2000, sidebarWidth: $sidebarWidth) {
             // Sidebar
             VStack(spacing: 0) {
                 // Header
@@ -48,8 +49,9 @@ struct ContentView: View {
                 
                 Divider()
                 
-                // SEARCH BAR - BRIGHT AND VISIBLE
+                // Search and filters section - HIGHLY VISIBLE
                 VStack(spacing: 8) {
+                    // Search bar - prominent with background
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 20, weight: .bold))
@@ -58,12 +60,13 @@ struct ContentView: View {
                         TextField("Search photos...", text: $searchText)
                             .textFieldStyle(.roundedBorder)
                             .onChange(of: searchText) {
+                                print("🔍 Search text changed: \(searchText)")
                                 updateSearchState()
                             }
                         
                         if !searchText.isEmpty {
                             Button {
-                                clearAllFilters()
+                                clearSearch()
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundColor(.secondary)
@@ -72,22 +75,32 @@ struct ContentView: View {
                         }
                         
                         Button {
+                            print("🎛 Filter button tapped, showing: \(showingFilters)")
                             showingFilters.toggle()
                         } label: {
                             Image(systemName: showingFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                                 .font(.system(size: 18))
-                                .foregroundColor(hasActiveFilters ? .orange : .secondary)
+                                .foregroundColor(hasActiveFilters ? .blue : .secondary)
                         }
                         .buttonStyle(.plain)
                         .help("Advanced Filters")
                     }
+                    .padding(12)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.blue, lineWidth: 2)
+                    )
                     
-                    // Filter panel
+                    // Advanced filters panel
                     if showingFilters {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Advanced Filters")
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Filters")
                                 .font(.caption)
-                                .fontWeight(.bold)
+                                .fontWeight(.semibold)
+                            
+                            Divider()
                             
                             // Date range
                             VStack(alignment: .leading, spacing: 4) {
@@ -96,117 +109,112 @@ struct ContentView: View {
                                     .foregroundColor(.secondary)
                                 
                                 HStack {
-                                    DatePicker("From", selection: Binding(
-                                        get: { filterStartDate ?? Date.distantPast },
-                                        set: { filterStartDate = $0 }
+                                    DatePicker("", selection: Binding(
+                                        get: { startDate ?? Date.distantPast },
+                                        set: { startDate = $0 }
                                     ), displayedComponents: .date)
                                     .labelsHidden()
-                                    .font(.caption)
-                                    .onChange(of: filterStartDate) { _, _ in updateSearchState() }
+                                    .onChange(of: startDate) { _, _ in updateSearchState() }
                                     
                                     Text("to")
                                         .font(.caption2)
                                     
-                                    DatePicker("To", selection: Binding(
-                                        get: { filterEndDate ?? Date() },
-                                        set: { filterEndDate = $0 }
+                                    DatePicker("", selection: Binding(
+                                        get: { endDate ?? Date() },
+                                        set: { endDate = $0 }
                                     ), displayedComponents: .date)
                                     .labelsHidden()
-                                    .font(.caption)
-                                    .onChange(of: filterEndDate) { _, _ in updateSearchState() }
+                                    .onChange(of: endDate) { _, _ in updateSearchState() }
+                                }
+                                
+                                if startDate != nil || endDate != nil {
+                                    Button("Clear Dates") {
+                                        startDate = nil
+                                        endDate = nil
+                                        updateSearchState()
+                                    }
+                                    .font(.caption2)
                                 }
                             }
                             
                             Divider()
                             
-                            // Camera
+                            // Camera filter
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Camera Model")
+                                Text("Camera")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                 
-                                TextField("e.g., Canon, Sony...", text: $filterCamera)
+                                TextField("Camera model...", text: $selectedCamera)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.caption)
-                                    .onChange(of: filterCamera) { _, _ in updateSearchState() }
+                                    .onChange(of: selectedCamera) { _, _ in updateSearchState() }
                             }
                             
                             Divider()
                             
-                            // Aperture
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Aperture (f-stop)")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
+                            // Aperture range
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Aperture (f-stop)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                
+                                HStack {
+                                    TextField("Min", value: $minAperture, format: .number)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.caption)
+                                        .frame(width: 60)
+                                        .onChange(of: minAperture) { _, _ in updateSearchState() }
                                     
-                                    HStack {
-                                        TextField("Min", value: $filterMinAperture, format: .number)
-                                            .textFieldStyle(.roundedBorder)
-                                            .font(.caption)
-                                            .frame(width: 50)
-                                            .onChange(of: filterMinAperture) { _, _ in updateSearchState() }
-                                        
-                                        Text("-")
-                                        
-                                        TextField("Max", value: $filterMaxAperture, format: .number)
-                                            .textFieldStyle(.roundedBorder)
-                                            .font(.caption)
-                                            .frame(width: 50)
-                                            .onChange(of: filterMaxAperture) { _, _ in updateSearchState() }
-                                    }
+                                    Text("-")
+                                    
+                                    TextField("Max", value: $maxAperture, format: .number)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.caption)
+                                        .frame(width: 60)
+                                        .onChange(of: maxAperture) { _, _ in updateSearchState() }
                                 }
                             }
                             
                             Divider()
                             
-                            // ISO
+                            // ISO range
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("ISO")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                 
                                 HStack {
-                                    TextField("Min", value: $filterMinISO, format: .number)
+                                    TextField("Min", value: $minISO, format: .number)
                                         .textFieldStyle(.roundedBorder)
                                         .font(.caption)
-                                        .frame(width: 50)
-                                        .onChange(of: filterMinISO) { _, _ in updateSearchState() }
+                                        .frame(width: 60)
+                                        .onChange(of: minISO) { _, _ in updateSearchState() }
                                     
                                     Text("-")
                                     
-                                    TextField("Max", value: $filterMaxISO, format: .number)
+                                    TextField("Max", value: $maxISO, format: .number)
                                         .textFieldStyle(.roundedBorder)
                                         .font(.caption)
-                                        .frame(width: 50)
-                                        .onChange(of: filterMaxISO) { _, _ in updateSearchState() }
+                                        .frame(width: 60)
+                                        .onChange(of: maxISO) { _, _ in updateSearchState() }
                                 }
                             }
                             
                             if hasActiveFilters {
-                                HStack {
-                                    Spacer()
-                                    Button("Clear Filters") {
-                                        clearFilterValues()
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.bordered)
+                                Button("Clear All Filters") {
+                                    clearAllFilters()
                                 }
+                                .font(.caption)
+                                .padding(.top, 4)
                             }
                         }
                         .padding(8)
-                        .background(Color.orange.opacity(0.1))
-                        .cornerRadius(6)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(8)
                     }
                 }
-                .padding(12)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.blue, lineWidth: 2)
-                )
-                .padding(.horizontal)
+                .padding()
                 
                 Divider()
                 
@@ -214,15 +222,16 @@ struct ContentView: View {
                 Group {
                     switch selectedTab {
                     case 0:
-                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId)
+                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId, sidebarWidth: $sidebarWidth)
                     case 1:
-                        TimelineSidebarView()
+                        TimelineSidebarView(sidebarWidth: $sidebarWidth)
                     case 2:
-                        DuplicatesSidebarView()
+                        DuplicatesSidebarView(sidebarWidth: $sidebarWidth)
                     default:
-                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId)
+                        DirectorySidebarView(selectedDirectoryId: $selectedDirectoryId, sidebarWidth: $sidebarWidth)
                     }
                 }
+                .frame(maxWidth: .infinity)
                 
                 Spacer()
                 
@@ -245,19 +254,18 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
             }
-            .frame(minWidth: 300, maxWidth: 400)
         } detail: {
             // Main content area
             if showingSearch {
-                SimpleSearchView(
+                FilteredSearchView(
                     searchText: searchText,
-                    startDate: filterStartDate,
-                    endDate: filterEndDate,
-                    camera: filterCamera,
-                    minAperture: filterMinAperture,
-                    maxAperture: filterMaxAperture,
-                    minISO: filterMinISO,
-                    maxISO: filterMaxISO,
+                    startDate: startDate,
+                    endDate: endDate,
+                    camera: selectedCamera,
+                    minAperture: minAperture,
+                    maxAperture: maxAperture,
+                    minISO: minISO,
+                    maxISO: maxISO,
                     selectedPhoto: $selectedPhoto
                 )
             } else {
@@ -319,146 +327,28 @@ struct ContentView: View {
     }
     
     private var hasActiveFilters: Bool {
-        filterStartDate != nil || filterEndDate != nil || !filterCamera.isEmpty ||
-        filterMinAperture != nil || filterMaxAperture != nil ||
-        filterMinISO != nil || filterMaxISO != nil
+        startDate != nil || endDate != nil || !selectedCamera.isEmpty ||
+        minAperture != nil || maxAperture != nil || minISO != nil || maxISO != nil
     }
     
     private func updateSearchState() {
         showingSearch = !searchText.isEmpty || hasActiveFilters
     }
     
-    private func clearAllFilters() {
+    private func clearSearch() {
         searchText = ""
-        clearFilterValues()
+        clearAllFilters()
         showingSearch = false
     }
     
-    private func clearFilterValues() {
-        filterStartDate = nil
-        filterEndDate = nil
-        filterCamera = ""
-        filterMinAperture = nil
-        filterMaxAperture = nil
-        filterMinISO = nil
-        filterMaxISO = nil
+    private func clearAllFilters() {
+        startDate = nil
+        endDate = nil
+        selectedCamera = ""
+        minAperture = nil
+        maxAperture = nil
+        minISO = nil
+        maxISO = nil
         updateSearchState()
-    }
-}
-
-// Simple inline search view with filters
-struct SimpleSearchView: View {
-    let searchText: String
-    let startDate: Date?
-    let endDate: Date?
-    let camera: String
-    let minAperture: Double?
-    let maxAperture: Double?
-    let minISO: Int?
-    let maxISO: Int?
-    @Binding var selectedPhoto: PhotoFile?
-    @EnvironmentObject var photoLibrary: PhotoLibrary
-    @State private var results: [PhotoFile] = []
-    
-    var body: some View {
-        VStack {
-            Text("Search Results: \(results.count) photos")
-                .font(.headline)
-                .padding()
-            
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 16)], spacing: 16) {
-                    ForEach(results) { photo in
-                        PhotoThumbnailView(
-                            photo: photo,
-                            thumbnailSize: 200,
-                            onTap: { selectedPhoto = photo }
-                        )
-                    }
-                }
-                .padding()
-            }
-        }
-        .onAppear {
-            performSearch()
-        }
-        .onChange(of: searchText) { _, _ in
-            performSearch()
-        }
-        .onChange(of: startDate) { _, _ in
-            performSearch()
-        }
-        .onChange(of: endDate) { _, _ in
-            performSearch()
-        }
-        .onChange(of: camera) { _, _ in
-            performSearch()
-        }
-        .onChange(of: minAperture) { _, _ in
-            performSearch()
-        }
-        .onChange(of: maxAperture) { _, _ in
-            performSearch()
-        }
-        .onChange(of: minISO) { _, _ in
-            performSearch()
-        }
-        .onChange(of: maxISO) { _, _ in
-            performSearch()
-        }
-    }
-    
-    private func performSearch() {
-        // Start with text search or all photos
-        var filtered: [PhotoFile] = []
-        
-        if !searchText.isEmpty {
-            filtered = photoLibrary.searchPhotos(query: searchText)
-        } else {
-            // Get all photos
-            for directory in photoLibrary.rootDirectories {
-                if let id = directory.id {
-                    filtered.append(contentsOf: photoLibrary.getPhotosForDirectory(id))
-                }
-            }
-        }
-        
-        // Apply date filters
-        if let start = startDate {
-            filtered = filtered.filter { ($0.exifDateTaken ?? $0.createdAt) >= start }
-        }
-        if let end = endDate {
-            filtered = filtered.filter { ($0.exifDateTaken ?? $0.createdAt) <= end }
-        }
-        
-        // Apply camera filter
-        if !camera.isEmpty {
-            filtered = filtered.filter { photo in
-                photo.exifCameraModel?.localizedCaseInsensitiveContains(camera) ?? false
-            }
-        }
-        
-        // Apply aperture filters
-        if let minAp = minAperture {
-            filtered = filtered.filter { ($0.exifAperture ?? 0) >= minAp }
-        }
-        if let maxAp = maxAperture {
-            filtered = filtered.filter { ($0.exifAperture ?? 999) <= maxAp }
-        }
-        
-        // Apply ISO filters
-        if let minIso = minISO {
-            filtered = filtered.filter { ($0.exifIso ?? 0) >= minIso }
-        }
-        if let maxIso = maxISO {
-            filtered = filtered.filter { ($0.exifIso ?? 999999) <= maxIso }
-        }
-        
-        // Sort by date
-        results = filtered.sorted { photo1, photo2 in
-            let date1 = photo1.exifDateTaken ?? photo1.createdAt
-            let date2 = photo2.exifDateTaken ?? photo2.createdAt
-            return date1 > date2
-        }
     }
 }

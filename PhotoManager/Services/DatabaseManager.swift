@@ -334,6 +334,257 @@ class DatabaseManager: ObservableObject {
         return duplicateGroups
     }
     
+    func findDuplicatesByDirectory() throws -> [DirectoryDuplicateInfo] {
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        // Get root directories map for full paths
+        var rootDirMap: [Int64: String] = [:]
+        for row in try db.prepare(DatabaseTables.rootDirectories) {
+            rootDirMap[row[DatabaseTables.rootDirId]] = row[DatabaseTables.rootDirPath]
+        }
+        
+        // Get all photos and group by directory using full path as key
+        var directoryMap: [String: (files: [PhotoFile], rootDirId: Int64, fullPath: String, relativePath: String)] = [:]
+        
+        for row in try db.prepare(DatabaseTables.photoFiles) {
+            let photo = PhotoFile(
+                id: row[DatabaseTables.photoId],
+                rootDirectoryId: row[DatabaseTables.photoRootDirId],
+                relativePath: row[DatabaseTables.photoRelativePath],
+                fileName: row[DatabaseTables.photoFileName],
+                fileExtension: row[DatabaseTables.photoFileExtension],
+                fileSize: row[DatabaseTables.photoFileSize],
+                fileHash: row[DatabaseTables.photoFileHash],
+                createdAt: row[DatabaseTables.photoCreatedAt],
+                modifiedAt: row[DatabaseTables.photoModifiedAt],
+                exifDateTaken: row[DatabaseTables.photoExifDateTaken],
+                exifCameraModel: row[DatabaseTables.photoExifCameraModel],
+                exifLensModel: row[DatabaseTables.photoExifLensModel],
+                exifFocalLength: row[DatabaseTables.photoExifFocalLength],
+                exifAperture: row[DatabaseTables.photoExifAperture],
+                exifIso: row[DatabaseTables.photoExifIso],
+                exifShutterSpeed: row[DatabaseTables.photoExifShutterSpeed],
+                imageWidth: row[DatabaseTables.photoImageWidth],
+                imageHeight: row[DatabaseTables.photoImageHeight],
+                hasThumbnail: row[DatabaseTables.photoHasThumbnail],
+                thumbnailPath: row[DatabaseTables.photoThumbnailPath],
+                userDescription: row[DatabaseTables.photoUserDescription],
+                userTags: row[DatabaseTables.photoUserTags]
+            )
+            
+            // Extract directory path (parent directory)
+            let directoryPath = (photo.relativePath as NSString).deletingLastPathComponent
+            let rootPath = rootDirMap[photo.rootDirectoryId] ?? ""
+            let fullPath = (rootPath as NSString).appendingPathComponent(directoryPath)
+            
+            // Use full path as key to distinguish directories with same relative path in different roots
+            if var existing = directoryMap[fullPath] {
+                existing.files.append(photo)
+                directoryMap[fullPath] = existing
+            } else {
+                directoryMap[fullPath] = (files: [photo], rootDirId: photo.rootDirectoryId, fullPath: fullPath, relativePath: directoryPath)
+            }
+        }
+        
+        // Get duplicate hashes
+        let duplicateHashQuery = """
+            SELECT file_hash FROM photo_files 
+            GROUP BY file_hash 
+            HAVING COUNT(*) > 1
+        """
+        var duplicateHashes = Set<String>()
+        for row in try db.prepare(duplicateHashQuery) {
+            duplicateHashes.insert(row[0] as! String)
+        }
+        
+        // Build directory duplicate info
+        var directoryDuplicateInfos: [DirectoryDuplicateInfo] = []
+        
+        for (fullPath, dirData) in directoryMap {
+            let files = dirData.files
+            let duplicateFiles = files.filter { duplicateHashes.contains($0.fileHash) }
+            
+            if !duplicateFiles.isEmpty {
+                let wastedSize = duplicateFiles.reduce(Int64(0)) { sum, file in
+                    // Count how many copies exist minus one
+                    let copyCount = files.filter { $0.fileHash == file.fileHash }.count
+                    return sum + (copyCount > 1 ? file.fileSize * Int64(copyCount - 1) : 0)
+                }
+                
+                let totalSize = files.reduce(Int64(0)) { $0 + $1.fileSize }
+                
+                directoryDuplicateInfos.append(DirectoryDuplicateInfo(
+                    directoryPath: dirData.relativePath,
+                    fullPath: dirData.fullPath,
+                    fileCount: files.count,
+                    duplicateFileCount: duplicateFiles.count,
+                    totalSize: totalSize,
+                    wastedSize: wastedSize,
+                    files: duplicateFiles,
+                    rootDirectoryId: dirData.rootDirId
+                ))
+            }
+        }
+        
+        return directoryDuplicateInfos.sorted { $0.duplicateFileCount > $1.duplicateFileCount }
+    }
+    
+    func findCompleteDuplicateDirectories() throws -> [CompleteDuplicateDirectory] {
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        // Get root directories map for full paths
+        var rootDirMap: [Int64: String] = [:]
+        for row in try db.prepare(DatabaseTables.rootDirectories) {
+            rootDirMap[row[DatabaseTables.rootDirId]] = row[DatabaseTables.rootDirPath]
+        }
+        
+        // Group photos by directory using full path as key to distinguish directories with same relative path
+        var directoryMap: [String: (files: [PhotoFile], rootDirId: Int64, fullPath: String, relativePath: String)] = [:]
+        
+        for row in try db.prepare(DatabaseTables.photoFiles) {
+            let photo = PhotoFile(
+                id: row[DatabaseTables.photoId],
+                rootDirectoryId: row[DatabaseTables.photoRootDirId],
+                relativePath: row[DatabaseTables.photoRelativePath],
+                fileName: row[DatabaseTables.photoFileName],
+                fileExtension: row[DatabaseTables.photoFileExtension],
+                fileSize: row[DatabaseTables.photoFileSize],
+                fileHash: row[DatabaseTables.photoFileHash],
+                createdAt: row[DatabaseTables.photoCreatedAt],
+                modifiedAt: row[DatabaseTables.photoModifiedAt],
+                exifDateTaken: row[DatabaseTables.photoExifDateTaken],
+                exifCameraModel: row[DatabaseTables.photoExifCameraModel],
+                exifLensModel: row[DatabaseTables.photoExifLensModel],
+                exifFocalLength: row[DatabaseTables.photoExifFocalLength],
+                exifAperture: row[DatabaseTables.photoExifAperture],
+                exifIso: row[DatabaseTables.photoExifIso],
+                exifShutterSpeed: row[DatabaseTables.photoExifShutterSpeed],
+                imageWidth: row[DatabaseTables.photoImageWidth],
+                imageHeight: row[DatabaseTables.photoImageHeight],
+                hasThumbnail: row[DatabaseTables.photoHasThumbnail],
+                thumbnailPath: row[DatabaseTables.photoThumbnailPath],
+                userDescription: row[DatabaseTables.photoUserDescription],
+                userTags: row[DatabaseTables.photoUserTags]
+            )
+            
+            let directoryPath = (photo.relativePath as NSString).deletingLastPathComponent
+            let rootPath = rootDirMap[photo.rootDirectoryId] ?? ""
+            let fullPath = (rootPath as NSString).appendingPathComponent(directoryPath)
+            
+            // Use full path as key to distinguish directories with same relative path in different roots
+            if var existing = directoryMap[fullPath] {
+                existing.files.append(photo)
+                directoryMap[fullPath] = existing
+            } else {
+                directoryMap[fullPath] = (files: [photo], rootDirId: photo.rootDirectoryId, fullPath: fullPath, relativePath: directoryPath)
+            }
+        }
+        
+        // Find directories with identical file sets (by hash)
+        var hashSetMap: [Set<String>: [(fullPath: String, data: (files: [PhotoFile], rootDirId: Int64, fullPath: String, relativePath: String))]] = [:]
+        
+        for (fullPath, dirData) in directoryMap {
+            let hashSet = Set(dirData.files.map { $0.fileHash })
+            hashSetMap[hashSet, default: []].append((fullPath: fullPath, data: dirData))
+        }
+        
+        // Build complete duplicate directory groups
+        var completeDuplicates: [CompleteDuplicateDirectory] = []
+        
+        for (_, directories) in hashSetMap where directories.count > 1 {
+            let sortedDirectories = directories.sorted { $0.fullPath < $1.fullPath }
+            let primaryDir = sortedDirectories.first!
+            let duplicateDirs = Array(sortedDirectories.dropFirst())
+            
+            let totalSize = primaryDir.data.files.reduce(Int64(0)) { $0 + $1.fileSize }
+            
+            let primaryDirInfo = DirectoryInfo(
+                relativePath: primaryDir.data.relativePath,
+                fullPath: primaryDir.data.fullPath,
+                files: primaryDir.data.files,
+                rootDirectoryId: primaryDir.data.rootDirId
+            )
+            
+            let duplicateDirInfos = duplicateDirs.map { dir in
+                DirectoryInfo(
+                    relativePath: dir.data.relativePath,
+                    fullPath: dir.data.fullPath,
+                    files: dir.data.files,
+                    rootDirectoryId: dir.data.rootDirId
+                )
+            }
+            
+            completeDuplicates.append(CompleteDuplicateDirectory(
+                primaryDirectory: primaryDirInfo,
+                duplicateDirectories: duplicateDirInfos,
+                fileCount: primaryDir.data.files.count,
+                totalSize: totalSize
+            ))
+        }
+        
+        return completeDuplicates.sorted { $0.fileCount > $1.fileCount }
+    }
+    
+    func deletePhotosInDirectory(_ directoryPath: String) throws -> Int {
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        // Find all photos in this directory
+        var photoIds: [Int64] = []
+        
+        for row in try db.prepare(DatabaseTables.photoFiles) {
+            let relativePath = row[DatabaseTables.photoRelativePath]
+            let photoDirectoryPath = (relativePath as NSString).deletingLastPathComponent
+            
+            if photoDirectoryPath == directoryPath {
+                photoIds.append(row[DatabaseTables.photoId])
+            }
+        }
+        
+        // Delete all photos in this directory
+        for photoId in photoIds {
+            let photo = DatabaseTables.photoFiles.filter(DatabaseTables.photoId == photoId)
+            try db.run(photo.delete())
+        }
+        
+        return photoIds.count
+    }
+    
+    func moveDirectoryToTrash(_ fullDirectoryPath: String) throws {
+        let fileManager = FileManager.default
+        let directoryURL = URL(fileURLWithPath: fullDirectoryPath)
+        
+        // Check if directory exists
+        var isDirectory: ObjCBool = false
+        let exists = fileManager.fileExists(atPath: fullDirectoryPath, isDirectory: &isDirectory)
+        
+        if !exists {
+            NSLog("⚠️ DatabaseManager: Directory does not exist (may have been deleted): \(fullDirectoryPath)")
+            throw DatabaseError.queryFailed("Directory does not exist: \(fullDirectoryPath)")
+        }
+        
+        if !isDirectory.boolValue {
+            NSLog("⚠️ DatabaseManager: Path exists but is not a directory: \(fullDirectoryPath)")
+            throw DatabaseError.queryFailed("Path is not a directory: \(fullDirectoryPath)")
+        }
+        
+        NSLog("🗑️ DatabaseManager: Moving directory to trash: \(fullDirectoryPath)")
+        
+        // Move to trash using FileManager
+        do {
+            var resultingURL: NSURL?
+            try fileManager.trashItem(at: directoryURL, resultingItemURL: &resultingURL)
+            
+            if let trashedURL = resultingURL {
+                NSLog("✅ DatabaseManager: Successfully moved to trash at: \(trashedURL.path ?? "unknown")")
+            } else {
+                NSLog("✅ DatabaseManager: Successfully moved to trash")
+            }
+        } catch {
+            NSLog("❌ DatabaseManager: Failed to move to trash: \(error.localizedDescription)")
+            throw error
+        }
+    }
+    
     func deletePhoto(_ photoId: Int64) throws {
         guard let db = db else { throw DatabaseError.connectionFailed }
         

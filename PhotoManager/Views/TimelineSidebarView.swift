@@ -9,6 +9,8 @@ enum TimelineGranularity: String, CaseIterable {
 
 struct TimelineSidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
+    @Binding var sidebarWidth: CGFloat
+    @Binding var selectedPhoto: PhotoFile?
     @State private var yearGroups: [(String, [(String, [PhotoFile])])] = []
     @State private var expandedYears: Set<String> = []
     @State private var selectedYearMonth: String?
@@ -28,21 +30,9 @@ struct TimelineSidebarView: View {
             
             Divider()
             
-            List(selection: $selectedYearMonth) {
-                ForEach(yearGroups, id: \.0) { year, periodGroups in
-                    Section {
-                        if expandedYears.contains(year) {
-                            ForEach(periodGroups, id: \.0) { period, photos in
-                                TimelinePeriodRowView(
-                                    period: period,
-                                    photos: photos,
-                                    granularity: granularity,
-                                    isSelected: selectedYearMonth == period
-                                )
-                                .tag(period)
-                            }
-                        }
-                    } header: {
+            ScrollView {
+                    LazyVStack(spacing: 0) {
+                    ForEach(yearGroups, id: \.0) { year, periodGroups in
                         TimelineYearHeaderView(
                             year: year,
                             totalPhotos: periodGroups.reduce(0) { $0 + $1.1.count },
@@ -51,10 +41,30 @@ struct TimelineSidebarView: View {
                                 toggleYearExpansion(year)
                             }
                         )
+                        
+                        Divider()
+                        
+                        if expandedYears.contains(year) {
+                            ForEach(periodGroups, id: \.0) { period, photos in
+                                TimelinePeriodRowView(
+                                    period: period,
+                                    photos: photos,
+                                    granularity: granularity,
+                                    isSelected: selectedYearMonth == period,
+                                    selectedPhoto: $selectedPhoto
+                                )
+                                .onTapGesture {
+                                    selectedYearMonth = period
+                                }
+                                
+                                Divider()
+                            }
+                        }
+                        }
                     }
-                }
+                    .frame(width: sidebarWidth - 20)
+                    .padding(.horizontal, 10)
             }
-            .listStyle(SidebarListStyle())
         }
         .onAppear {
             loadTimelineData()
@@ -116,6 +126,7 @@ struct TimelineYearHeaderView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(PlainButtonStyle())
         .contentShape(Rectangle())
@@ -127,6 +138,8 @@ struct TimelinePeriodRowView: View {
     let photos: [PhotoFile]
     let granularity: TimelineGranularity
     let isSelected: Bool
+    @Binding var selectedPhoto: PhotoFile?
+    @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingAllPhotos = false
     
     private var displayName: String {
@@ -180,40 +193,54 @@ struct TimelinePeriodRowView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             
-            // Show a few sample thumbnails
+            // Show thumbnails that fit the available width
             if !photos.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(Array(photos.prefix(5))) { photo in
-                            TimelineThumbnailView(photo: photo)
-                        }
-                        
-                        if photos.count > 5 {
-                            Button {
-                                showingAllPhotos = true
-                            } label: {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.blue.opacity(0.2))
-                                    .frame(width: 40, height: 40)
-                                    .overlay(
-                                        VStack(spacing: 2) {
-                                            Image(systemName: "plus.circle.fill")
-                                                .font(.caption)
-                                                .foregroundColor(.blue)
-                                            Text("\(photos.count - 5)")
-                                                .font(.caption2)
-                                                .foregroundColor(.blue)
-                                        }
-                                    )
+                GeometryReader { geometry in
+                    let thumbnailSize: CGFloat = 50
+                    let spacing: CGFloat = 4
+                    let availableWidth = geometry.size.width - 20 // account for padding
+                    let thumbnailsPerRow = Int(availableWidth / (thumbnailSize + spacing))
+                    let maxThumbnails = max(1, thumbnailsPerRow)
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: spacing) {
+                            ForEach(Array(photos.prefix(maxThumbnails))) { photo in
+                                TimelineThumbnailView(photo: photo, size: thumbnailSize, onTap: {
+                                    selectedPhoto = photo
+                                })
+                                .environmentObject(photoLibrary)
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            
+                            if photos.count > maxThumbnails {
+                                Button {
+                                    showingAllPhotos = true
+                                } label: {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.blue.opacity(0.2))
+                                        .frame(width: thumbnailSize, height: thumbnailSize)
+                                        .overlay(
+                                            VStack(spacing: 2) {
+                                                Image(systemName: "plus.circle.fill")
+                                                    .font(.caption)
+                                                    .foregroundColor(.blue)
+                                                Text("\(photos.count - maxThumbnails)")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.blue)
+                                            }
+                                        )
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
                         }
+                        .padding(.leading, 20)
                     }
-                    .padding(.leading, 20)
                 }
+                .frame(height: 54)
             }
         }
+        .padding(.horizontal, 8)
         .padding(.vertical, 2)
         .background(
             RoundedRectangle(cornerRadius: 6)
@@ -228,31 +255,13 @@ struct TimelinePeriodRowView: View {
 
 struct TimelineThumbnailView: View {
     let photo: PhotoFile
+    let size: CGFloat
+    var onTap: (() -> Void)? = nil
     @EnvironmentObject var photoLibrary: PhotoLibrary
-    @State private var thumbnailImage: NSImage?
     
     var body: some View {
-        Group {
-            if let thumbnailImage = thumbnailImage {
-                Image(nsImage: thumbnailImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay(
-                        Image(systemName: "photo")
-                            .font(.caption2)
-                            .foregroundColor(.gray)
-                    )
-            }
-        }
-        .frame(width: 40, height: 40)
-        .clipped()
-        .cornerRadius(4)
-        .onAppear {
-            thumbnailImage = photoLibrary.getThumbnailImage(for: photo)
-        }
+        ReusableHoverThumbnail(photo: photo, size: size, onTap: onTap)
+            .environmentObject(photoLibrary)
     }
 }
 

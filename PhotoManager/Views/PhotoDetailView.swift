@@ -12,6 +12,7 @@ struct PhotoDetailView: View {
     @State private var showingFullscreenImage = false
     @State private var showingSaveSuccess = false
     @State private var currentPhotoId: Int64?
+    @State private var showingOpenWithPicker = false
     
     var body: some View {
         HStack(spacing: 0) {
@@ -25,6 +26,18 @@ struct PhotoDetailView: View {
                         .background(Color.black.opacity(0.05))
                         .onTapGesture {
                             showingFullscreenImage = true
+                        }
+                        .contextMenu {
+                            Button(action: { openWithDefaultApp() }) {
+                                Label("Open", systemImage: "arrow.up.forward.app")
+                            }
+                            Button(action: { showingOpenWithPicker = true }) {
+                                Label("Open With...", systemImage: "ellipsis.circle")
+                            }
+                            Divider()
+                            Button(action: showInFinder) {
+                                Label("Show in Finder", systemImage: "folder")
+                            }
                         }
                         .onHover { isHovering in
                             if isHovering {
@@ -184,6 +197,16 @@ struct PhotoDetailView: View {
                                 Label("Show in Finder", systemImage: "folder")
                             }
                             .buttonStyle(.bordered)
+                            
+                            Button(action: openWithDefaultApp) {
+                                Label("Open in Default App", systemImage: "arrow.up.forward.app")
+                            }
+                            .buttonStyle(.bordered)
+                            
+                            Button(action: { showingOpenWithPicker = true }) {
+                                Label("Open With...", systemImage: "ellipsis.circle")
+                            }
+                            .buttonStyle(.bordered)
                         }
                     }
                     .padding()
@@ -215,6 +238,9 @@ struct PhotoDetailView: View {
         }
         .sheet(isPresented: $showingFullscreenImage) {
             FullscreenImageView(image: fullImage, fileName: photo.fileName)
+        }
+        .sheet(isPresented: $showingOpenWithPicker) {
+            OpenWithPickerView(photoPath: getPhotoPath())
         }
     }
     
@@ -277,16 +303,56 @@ struct PhotoDetailView: View {
         print("✅ PhotoDetailView: Metadata saved successfully")
     }
     
-    private func showInFinder() {
+    private func getPhotoPath() -> String {
         guard let rootDirectory = photoLibrary.rootDirectories.first(where: { $0.id == photo.rootDirectoryId }) else {
-            print("❌ PhotoDetailView: Cannot find root directory")
+            return photo.relativePath
+        }
+        return (rootDirectory.path as NSString).appendingPathComponent(photo.relativePath)
+    }
+    
+    private func showInFinder() {
+        let fullPath = getPhotoPath()
+        let fileURL = URL(fileURLWithPath: fullPath)
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+    }
+    
+    private func openWithDefaultApp() {
+        guard let rootDirectory = photoLibrary.rootDirectories.first(where: { $0.id == photo.rootDirectoryId }) else {
+            print("❌ Cannot find root directory")
             return
         }
         
-        let fullPath = (rootDirectory.path as NSString).appendingPathComponent(photo.relativePath)
-        let fileURL = URL(fileURLWithPath: fullPath)
+        // Try to restore security-scoped access if we have bookmark data
+        var directoryURL: URL? = nil
+        var isAccessingSecurityScope = false
         
-        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        if let bookmarkData = rootDirectory.bookmarkData {
+            do {
+                var isStale = false
+                directoryURL = try URL(resolvingBookmarkData: bookmarkData,
+                                      options: [.withSecurityScope],
+                                      relativeTo: nil,
+                                      bookmarkDataIsStale: &isStale)
+                
+                if let url = directoryURL {
+                    isAccessingSecurityScope = url.startAccessingSecurityScopedResource()
+                    print("🔓 Security-scoped access for open: \(isAccessingSecurityScope)")
+                }
+            } catch {
+                print("⚠️ Failed to resolve bookmark: \(error.localizedDescription)")
+            }
+        }
+        
+        let fullPath = getPhotoPath()
+        let fileURL = URL(fileURLWithPath: fullPath)
+        NSWorkspace.shared.open(fileURL)
+        
+        // Don't stop accessing immediately - let the other app open the file
+        if isAccessingSecurityScope {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                directoryURL?.stopAccessingSecurityScopedResource()
+            }
+        }
     }
     
     private func loadFullImage() {
