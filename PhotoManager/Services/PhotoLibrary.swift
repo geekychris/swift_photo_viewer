@@ -444,6 +444,32 @@ class PhotoLibrary: ObservableObject {
         }
     }
     
+    func updatePhotoRating(_ photoId: Int64, rating: Int) {
+        print("⭐ PhotoLibrary: updatePhotoRating called for ID: \(photoId), rating: \(rating)")
+        do {
+            try databaseManager.updatePhotoRating(photoId, rating: rating)
+            print("✅ PhotoLibrary: Successfully updated rating")
+            objectWillChange.send()
+        } catch {
+            let errorMsg = "Failed to update photo rating: \(error.localizedDescription)"
+            print("❌ PhotoLibrary: \(errorMsg)")
+            errorMessage = errorMsg
+        }
+    }
+    
+    func updatePhotoColorTag(_ photoId: Int64, colorTag: String?) {
+        print("🎨 PhotoLibrary: updatePhotoColorTag called for ID: \(photoId), color: \(colorTag ?? "none")")
+        do {
+            try databaseManager.updatePhotoColorTag(photoId, colorTag: colorTag)
+            print("✅ PhotoLibrary: Successfully updated color tag")
+            objectWillChange.send()
+        } catch {
+            let errorMsg = "Failed to update photo color tag: \(error.localizedDescription)"
+            print("❌ PhotoLibrary: \(errorMsg)")
+            errorMessage = errorMsg
+        }
+    }
+    
     func getPhotoById(_ photoId: Int64) -> PhotoFile? {
         do {
             return try databaseManager.getPhotoById(photoId)
@@ -453,13 +479,29 @@ class PhotoLibrary: ObservableObject {
         }
     }
     
-    func searchPhotos(query: String) -> [PhotoFile] {
-        guard !query.isEmpty else { return [] }
-        
+    func searchPhotos(query: String, minRating: Int? = nil, colorTag: String? = nil) -> [PhotoFile] {
         do {
-            return try databaseManager.searchPhotos(query: query)
+            return try databaseManager.searchPhotos(query: query, minRating: minRating, colorTag: colorTag)
         } catch {
             errorMessage = "Failed to search photos: \(error.localizedDescription)"
+            return []
+        }
+    }
+    
+    func getPhotosByRating(minRating: Int) -> [PhotoFile] {
+        do {
+            return try databaseManager.getPhotosByRating(minRating: minRating)
+        } catch {
+            errorMessage = "Failed to get photos by rating: \(error.localizedDescription)"
+            return []
+        }
+    }
+    
+    func getPhotosByColorTag(_ colorTag: String) -> [PhotoFile] {
+        do {
+            return try databaseManager.getPhotosByColorTag(colorTag)
+        } catch {
+            errorMessage = "Failed to get photos by color tag: \(error.localizedDescription)"
             return []
         }
     }

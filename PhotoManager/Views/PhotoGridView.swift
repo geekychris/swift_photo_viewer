@@ -163,36 +163,194 @@ struct PhotoGridView: View {
     }
 }
 
+// MARK: - Rating Label Component
+struct RatingPickerLabel: View {
+    let rating: Int
+    
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<rating, id: \.self) { _ in
+                Image(systemName: "flag.fill")
+                    .foregroundColor(.orange)
+                    .font(.caption2)
+            }
+        }
+    }
+}
+
+// MARK: - Color Tag Indicator Component
+struct ColorTagIndicator: View {
+    let colorTag: String?
+    var size: CGFloat = 12
+    
+    private func colorForTag(_ tag: String) -> Color? {
+        switch tag {
+        case "red": return .red
+        case "orange": return .orange
+        case "yellow": return .yellow
+        case "green": return .green
+        case "blue": return .blue
+        case "purple": return .purple
+        case "gray": return .gray
+        default: return nil
+        }
+    }
+    
+    var body: some View {
+        if let colorTag = colorTag,
+           let color = colorForTag(colorTag) {
+            Circle()
+                .fill(color)
+                .frame(width: size, height: size)
+                .overlay(
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
+                )
+        }
+    }
+}
+
 struct PhotoThumbnailView: View {
     let photo: PhotoFile
     let thumbnailSize: CGFloat
     let onTap: () -> Void
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var thumbnailImage: NSImage?
+    @State private var isHovering: Bool = false
+    @State private var rating: Int = 0
+    @State private var colorTag: String? = nil
+    @State private var refreshTrigger: Int = 0
+    
+    private var quickColors: [(id: String, color: Color)] {
+        [
+            ("red", .red),
+            ("orange", .orange),
+            ("yellow", .yellow),
+            ("green", .green),
+            ("blue", .blue),
+            ("purple", .purple),
+            ("gray", .gray)
+        ]
+    }
     
     var body: some View {
         VStack(spacing: 8) {
-            // Thumbnail
-            Group {
-                if let thumbnailImage = thumbnailImage {
-                    Image(nsImage: thumbnailImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.gray.opacity(0.3))
-                        .overlay(
-                            Image(systemName: "photo")
-                                .font(.largeTitle)
-                                .foregroundColor(.gray)
-                        )
+            // Thumbnail with overlay controls
+            ZStack {
+                Group {
+                    if let thumbnailImage = thumbnailImage {
+                        Image(nsImage: thumbnailImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    } else {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.gray.opacity(0.3))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(.largeTitle)
+                                    .foregroundColor(.gray)
+                            )
+                    }
+                }
+                .frame(width: thumbnailSize, height: thumbnailSize)
+                .clipped()
+                .cornerRadius(8)
+                .onTapGesture {
+                    onTap()
+                }
+                
+                // Hover overlay with quick edit controls
+                if isHovering {
+                    VStack {
+                        Spacer()
+                        VStack(spacing: 6) {
+                            // Quick rating picker
+                            HStack(spacing: 3) {
+                                ForEach(0..<6) { index in
+                                Button {
+                                    let newRating = rating == index ? 0 : index
+                                    rating = newRating
+                                    if let photoId = photo.id {
+                                        photoLibrary.updatePhotoRating(photoId, rating: newRating)
+                                        refreshTrigger += 1
+                                    }
+                                } label: {
+                                        Image(systemName: index <= rating ? "flag.fill" : "flag")
+                                            .foregroundColor(index <= rating ? .orange : .white.opacity(0.7))
+                                            .font(.caption)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("\(index) flag\(index == 1 ? "" : "s")")
+                                }
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(6)
+                            
+                            // Quick color picker
+                            HStack(spacing: 4) {
+                                // Clear button
+                                Button {
+                                    colorTag = nil
+                                    if let photoId = photo.id {
+                                        photoLibrary.updatePhotoColorTag(photoId, colorTag: nil)
+                                        refreshTrigger += 1
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.white.opacity(0.8))
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Clear color")
+                                
+                                ForEach(quickColors, id: \.id) { option in
+                                    Button {
+                                        let newColor = colorTag == option.id ? nil : option.id
+                                        colorTag = newColor
+                                        if let photoId = photo.id {
+                                            photoLibrary.updatePhotoColorTag(photoId, colorTag: newColor)
+                                            refreshTrigger += 1
+                                        }
+                                    } label: {
+                                        ZStack {
+                                            // Larger hit area
+                                            Rectangle()
+                                                .fill(Color.clear)
+                                                .frame(width: 24, height: 24)
+                                            
+                                            Circle()
+                                                .fill(option.color)
+                                                .frame(width: 16, height: 16)
+                                                .overlay(
+                                                    Circle()
+                                                        .strokeBorder(Color.white.opacity(0.6), lineWidth: 1)
+                                                )
+                                                .overlay(
+                                                    colorTag == option.id ?
+                                                    Image(systemName: "checkmark")
+                                                        .font(.system(size: 8, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                    : nil
+                                                )
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(option.id.capitalized)
+                                }
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(6)
+                        }
+                        .padding(8)
+                    }
                 }
             }
-            .frame(width: thumbnailSize, height: thumbnailSize)
-            .clipped()
-            .cornerRadius(8)
-            .onTapGesture {
-                onTap()
+            .onHover { hovering in
+                isHovering = hovering
             }
             
             // Photo info
@@ -256,6 +414,18 @@ struct PhotoThumbnailView: View {
                     }
                 }
                 
+                // Rating and Color Tag
+                HStack(spacing: 6) {
+                    // Rating - use state variable to show changes
+                    if rating > 0 {
+                        RatingPickerLabel(rating: rating)
+                    }
+                    
+                    // Color Tag - use state variable to show changes
+                    ColorTagIndicator(colorTag: colorTag, size: 10)
+                }
+                .id(refreshTrigger) // Force refresh when changed
+                
                 // User tags if available
                 if let tags = photo.userTags, !tags.isEmpty {
                     Text(tags)
@@ -279,9 +449,17 @@ struct PhotoThumbnailView: View {
         }
         .onAppear {
             loadThumbnail()
+            rating = photo.rating
+            colorTag = photo.colorTag
         }
         .onChange(of: photo.hasThumbnail) {
             loadThumbnail()
+        }
+        .onChange(of: photo.rating) { oldValue, newValue in
+            rating = newValue
+        }
+        .onChange(of: photo.colorTag) { oldValue, newValue in
+            colorTag = newValue
         }
         .id(photo.id) // Force view refresh when photo changes
     }

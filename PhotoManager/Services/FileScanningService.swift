@@ -211,7 +211,9 @@ class FileScanningService: ObservableObject {
             hasThumbnail: false,
             thumbnailPath: nil,
             userDescription: nil,
-            userTags: nil
+            userTags: nil,
+            rating: 0,
+            colorTag: nil
         )
         
         // Save to database

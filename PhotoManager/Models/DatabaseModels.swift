@@ -46,6 +46,8 @@ struct PhotoFile: Identifiable, Hashable {
     let thumbnailPath: String?
     var userDescription: String?
     var userTags: String?
+    var rating: Int // 0-5 stars/flags
+    var colorTag: String? // Color tag: red, orange, yellow, green, blue, purple, gray
     
     var fullPath: String {
         return relativePath
@@ -155,4 +157,6 @@ class DatabaseTables {
     static let photoThumbnailPath = Expression<String?>("thumbnail_path")
     static let photoUserDescription = Expression<String?>("user_description")
     static let photoUserTags = Expression<String?>("user_tags")
+    static let photoRating = Expression<Int>("rating")
+    static let photoColorTag = Expression<String?>("color_tag")
 }

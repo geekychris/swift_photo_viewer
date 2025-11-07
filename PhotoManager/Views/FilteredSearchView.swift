@@ -12,6 +12,8 @@ struct FilteredSearchView: View {
     let maxAperture: Double?
     let minISO: Int?
     let maxISO: Int?
+    let minRating: Int
+    let selectedColors: Set<String>
     @Binding var selectedPhoto: PhotoFile?
     
     @EnvironmentObject var photoLibrary: PhotoLibrary
@@ -119,6 +121,12 @@ struct FilteredSearchView: View {
         .onChange(of: maxISO) { _, _ in
             performFilteredSearch()
         }
+        .onChange(of: minRating) { _, _ in
+            performFilteredSearch()
+        }
+        .onChange(of: selectedColors) { _, _ in
+            performFilteredSearch()
+        }
     }
     
     private func performFilteredSearch() {
@@ -198,6 +206,23 @@ struct FilteredSearchView: View {
                 return iso <= maxIso
             }
             logger.info("After max ISO filter: \(results.count) photos")
+        }
+        
+        // Apply rating filter (at least minRating)
+        if minRating > 0 {
+            results = results.filter { photo in
+                photo.rating >= minRating
+            }
+            logger.info("After rating filter: \(results.count) photos")
+        }
+        
+        // Apply color filter (any of selected colors)
+        if !selectedColors.isEmpty {
+            results = results.filter { photo in
+                guard let colorTag = photo.colorTag else { return false }
+                return selectedColors.contains(colorTag)
+            }
+            logger.info("After color filter: \(results.count) photos")
         }
         
         // Sort by date

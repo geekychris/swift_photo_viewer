@@ -8,6 +8,8 @@ struct PhotoDetailView: View {
     @State private var isLoading = true
     @State private var userDescription: String = ""
     @State private var userTags: String = ""
+    @State private var rating: Int = 0
+    @State private var colorTag: String? = nil
     @State private var hasUnsavedChanges = false
     @State private var showingFullscreenImage = false
     @State private var showingSaveSuccess = false
@@ -131,6 +133,39 @@ struct PhotoDetailView: View {
                                     }
                                 }
                                 .padding(.top, 4)
+                            }
+                        }
+                        
+                        Divider()
+                        
+                        // Rating and Color Tag
+                        MetadataSectionView(title: "Rating & Color") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                // Rating
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Rating")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                    
+                                    RatingPicker(rating: $rating, onChange: { newRating in
+                                        guard let photoId = photo.id else { return }
+                                        photoLibrary.updatePhotoRating(photoId, rating: newRating)
+                                    })
+                                }
+                                
+                                // Color Tag
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Color Tag")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                    
+                                    ColorTagPicker(selectedColor: $colorTag, onChange: { newColor in
+                                        guard let photoId = photo.id else { return }
+                                        photoLibrary.updatePhotoColorTag(photoId, colorTag: newColor)
+                                    })
+                                }
                             }
                         }
                         
@@ -271,14 +306,20 @@ struct PhotoDetailView: View {
         if let freshPhoto = photoLibrary.getPhotoById(photoId) {
             userDescription = freshPhoto.userDescription ?? ""
             userTags = freshPhoto.userTags ?? ""
+            rating = freshPhoto.rating
+            colorTag = freshPhoto.colorTag
             currentPhotoId = photoId
             print("🔄 PhotoDetailView: Loaded fresh metadata from DB")
             print("   Description: \(freshPhoto.userDescription ?? "nil")")
             print("   Tags: \(freshPhoto.userTags ?? "nil")")
+            print("   Rating: \(freshPhoto.rating)")
+            print("   Color: \(freshPhoto.colorTag ?? "nil")")
         } else {
             // Fall back to original photo data
             userDescription = photo.userDescription ?? ""
             userTags = photo.userTags ?? ""
+            rating = photo.rating
+            colorTag = photo.colorTag
             currentPhotoId = photoId
             print("⚠️ PhotoDetailView: Using stale photo data (DB lookup failed)")
         }
@@ -426,6 +467,89 @@ struct PhotoDetailView: View {
                     }
                 }
                 isLoading = false
+            }
+        }
+    }
+}
+
+// MARK: - Rating Picker Component
+struct RatingPicker: View {
+    @Binding var rating: Int
+    let onChange: (Int) -> Void
+    var isCompact: Bool = false
+    
+    var body: some View {
+        HStack(spacing: isCompact ? 2 : 4) {
+            ForEach(0..<6) { index in
+                Button {
+                    let newRating = rating == index ? 0 : index
+                    rating = newRating
+                    onChange(newRating)
+                } label: {
+                    Image(systemName: index <= rating ? "flag.fill" : "flag")
+                        .foregroundColor(index <= rating ? .orange : .gray.opacity(0.4))
+                        .font(isCompact ? .caption : .body)
+                }
+                .buttonStyle(.plain)
+                .help("\(index) flag\(index == 1 ? "" : "s")")
+            }
+        }
+    }
+}
+
+// MARK: - Color Tag Picker Component
+struct ColorTagPicker: View {
+    @Binding var selectedColor: String?
+    let onChange: (String?) -> Void
+    var isCompact: Bool = false
+    
+    private let colorOptions: [(id: String, color: Color)] = [
+        ("red", .red),
+        ("orange", .orange),
+        ("yellow", .yellow),
+        ("green", .green),
+        ("blue", .blue),
+        ("purple", .purple),
+        ("gray", .gray)
+    ]
+    
+    var body: some View {
+        HStack(spacing: isCompact ? 4 : 8) {
+            // Clear button
+            Button {
+                selectedColor = nil
+                onChange(nil)
+            } label: {
+                Image(systemName: selectedColor == nil ? "circle.fill" : "circle")
+                    .foregroundColor(selectedColor == nil ? .primary : .gray.opacity(0.3))
+                    .font(isCompact ? .caption : .body)
+            }
+            .buttonStyle(.plain)
+            .help("No color")
+            
+            ForEach(colorOptions, id: \.id) { option in
+                Button {
+                    let newColor = selectedColor == option.id ? nil : option.id
+                    selectedColor = newColor
+                    onChange(newColor)
+                } label: {
+                    Circle()
+                        .fill(option.color)
+                        .frame(width: isCompact ? 12 : 16, height: isCompact ? 12 : 16)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(Color.primary.opacity(0.2), lineWidth: 1)
+                        )
+                        .overlay(
+                            selectedColor == option.id ?
+                            Image(systemName: "checkmark")
+                                .font(.system(size: isCompact ? 8 : 10, weight: .bold))
+                                .foregroundColor(.white)
+                            : nil
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(option.id.capitalized)
             }
         }
     }

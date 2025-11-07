@@ -17,7 +17,21 @@ struct ContentView: View {
     @State private var maxAperture: Double?
     @State private var minISO: Int?
     @State private var maxISO: Int?
+    @State private var minRating: Int = 0
+    @State private var selectedColors: Set<String> = []
     @State private var sidebarWidth: CGFloat = 500
+    
+    private var colorOptions: [(id: String, name: String, color: Color)] {
+        [
+            ("red", "Red", .red),
+            ("orange", "Orange", .orange),
+            ("yellow", "Yellow", .yellow),
+            ("green", "Green", .green),
+            ("blue", "Blue", .blue),
+            ("purple", "Purple", .purple),
+            ("gray", "Gray", .gray)
+        ]
+    }
     
     var body: some View {
         ResizableSplitView(minSidebarWidth: 300, maxSidebarWidth: 2000, sidebarWidth: $sidebarWidth) {
@@ -202,6 +216,67 @@ struct ContentView: View {
                                 }
                             }
                             
+                            Divider()
+                            
+                            // Rating filter
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Minimum Rating")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                
+                                HStack(spacing: 3) {
+                                    ForEach(0..<6) { index in
+                                        Button {
+                                            minRating = index
+                                            updateSearchState()
+                                        } label: {
+                                            Image(systemName: index <= minRating && minRating > 0 ? "flag.fill" : "flag")
+                                                .foregroundColor(index <= minRating && minRating > 0 ? .orange : .gray.opacity(0.4))
+                                                .font(.caption)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                            
+                            Divider()
+                            
+                            // Color filter
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Colors")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                
+                                HStack(spacing: 6) {
+                                    ForEach(colorOptions, id: \.id) { option in
+                                        Button {
+                                            if selectedColors.contains(option.id) {
+                                                selectedColors.remove(option.id)
+                                            } else {
+                                                selectedColors.insert(option.id)
+                                            }
+                                            updateSearchState()
+                                        } label: {
+                                            Circle()
+                                                .fill(option.color)
+                                                .frame(width: 16, height: 16)
+                                                .overlay(
+                                                    Circle()
+                                                        .strokeBorder(Color.primary.opacity(0.3), lineWidth: 1)
+                                                )
+                                                .overlay(
+                                                    selectedColors.contains(option.id) ?
+                                                    Image(systemName: "checkmark")
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                    : nil
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                            
                             if hasActiveFilters {
                                 Button("Clear All Filters") {
                                     clearAllFilters()
@@ -277,6 +352,8 @@ struct ContentView: View {
                     maxAperture: maxAperture,
                     minISO: minISO,
                     maxISO: maxISO,
+                    minRating: minRating,
+                    selectedColors: selectedColors,
                     selectedPhoto: $selectedPhoto
                 )
             } else {
@@ -343,7 +420,8 @@ struct ContentView: View {
     
     private var hasActiveFilters: Bool {
         startDate != nil || endDate != nil || !selectedCamera.isEmpty ||
-        minAperture != nil || maxAperture != nil || minISO != nil || maxISO != nil
+        minAperture != nil || maxAperture != nil || minISO != nil || maxISO != nil ||
+        minRating > 0 || !selectedColors.isEmpty
     }
     
     private func updateSearchState() {
@@ -364,6 +442,8 @@ struct ContentView: View {
         maxAperture = nil
         minISO = nil
         maxISO = nil
+        minRating = 0
+        selectedColors.removeAll()
         updateSearchState()
     }
 }

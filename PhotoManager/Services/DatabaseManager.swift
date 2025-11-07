@@ -126,16 +126,26 @@ class DatabaseManager: ObservableObject {
                 NSLog("✅ DatabaseManager: user_description column added")
             }
             
-            // Add user_tags column if it doesn't exist
-            if !columnNames.contains("user_tags") {
-                NSLog("🔄 DatabaseManager: Adding user_tags column")
-                try db.run("ALTER TABLE photo_files ADD COLUMN user_tags TEXT")
-                NSLog("✅ DatabaseManager: user_tags column added")
+            
+            // Add rating column if it doesn't exist
+            if !columnNames.contains("rating") {
+                NSLog("🔄 DatabaseManager: Adding rating column")
+                try db.run("ALTER TABLE photo_files ADD COLUMN rating INTEGER DEFAULT 0")
+                NSLog("✅ DatabaseManager: rating column added")
+            }
+            
+            // Add color_tag column if it doesn't exist
+            if !columnNames.contains("color_tag") {
+                NSLog("🔄 DatabaseManager: Adding color_tag column")
+                try db.run("ALTER TABLE photo_files ADD COLUMN color_tag TEXT")
+                NSLog("✅ DatabaseManager: color_tag column added")
             }
             
             // Create indices for new columns
             try db.run("CREATE INDEX IF NOT EXISTS idx_photo_user_description ON photo_files(user_description)")
             try db.run("CREATE INDEX IF NOT EXISTS idx_photo_user_tags ON photo_files(user_tags)")
+            try db.run("CREATE INDEX IF NOT EXISTS idx_photo_rating ON photo_files(rating)")
+            try db.run("CREATE INDEX IF NOT EXISTS idx_photo_color_tag ON photo_files(color_tag)")
             
             NSLog("✅ DatabaseManager: Database migration completed")
         } catch {
@@ -234,7 +244,9 @@ class DatabaseManager: ObservableObject {
             DatabaseTables.photoHasThumbnail <- photo.hasThumbnail,
             DatabaseTables.photoThumbnailPath <- photo.thumbnailPath,
             DatabaseTables.photoUserDescription <- photo.userDescription,
-            DatabaseTables.photoUserTags <- photo.userTags
+            DatabaseTables.photoUserTags <- photo.userTags,
+            DatabaseTables.photoRating <- photo.rating,
+            DatabaseTables.photoColorTag <- photo.colorTag
         )
         
         let photoId = try db.run(insert)
@@ -272,7 +284,9 @@ class DatabaseManager: ObservableObject {
                 hasThumbnail: row[DatabaseTables.photoHasThumbnail],
                 thumbnailPath: row[DatabaseTables.photoThumbnailPath],
                 userDescription: row[DatabaseTables.photoUserDescription],
-                userTags: row[DatabaseTables.photoUserTags]
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
             ))
         }
         
@@ -324,8 +338,10 @@ class DatabaseManager: ObservableObject {
                     hasThumbnail: fileRow[DatabaseTables.photoHasThumbnail],
                     thumbnailPath: fileRow[DatabaseTables.photoThumbnailPath],
                     userDescription: fileRow[DatabaseTables.photoUserDescription],
-                    userTags: fileRow[DatabaseTables.photoUserTags]
-                ))
+                    userTags: fileRow[DatabaseTables.photoUserTags],
+                rating: (try? fileRow.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? fileRow.get(DatabaseTables.photoColorTag)
+            ))
             }
             
             duplicateGroups.append(DuplicateGroup(fileHash: hash, files: files, totalSize: totalSize))
@@ -369,7 +385,9 @@ class DatabaseManager: ObservableObject {
                 hasThumbnail: row[DatabaseTables.photoHasThumbnail],
                 thumbnailPath: row[DatabaseTables.photoThumbnailPath],
                 userDescription: row[DatabaseTables.photoUserDescription],
-                userTags: row[DatabaseTables.photoUserTags]
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
             )
             
             // Extract directory path (parent directory)
@@ -464,7 +482,9 @@ class DatabaseManager: ObservableObject {
                 hasThumbnail: row[DatabaseTables.photoHasThumbnail],
                 thumbnailPath: row[DatabaseTables.photoThumbnailPath],
                 userDescription: row[DatabaseTables.photoUserDescription],
-                userTags: row[DatabaseTables.photoUserTags]
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
             )
             
             let directoryPath = (photo.relativePath as NSString).deletingLastPathComponent
@@ -637,7 +657,9 @@ class DatabaseManager: ObservableObject {
                 hasThumbnail: row[DatabaseTables.photoHasThumbnail],
                 thumbnailPath: row[DatabaseTables.photoThumbnailPath],
                 userDescription: row[DatabaseTables.photoUserDescription],
-                userTags: row[DatabaseTables.photoUserTags]
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
             )
         }
         
@@ -671,20 +693,57 @@ class DatabaseManager: ObservableObject {
         }
     }
     
-    func searchPhotos(query: String) throws -> [PhotoFile] {
-        NSLog("🔍 DatabaseManager: Searching for: %@", query)
+    func updatePhotoRating(_ photoId: Int64, rating: Int) throws {
+        NSLog("⭐ DatabaseManager: updatePhotoRating called for ID: %lld, rating: %d", photoId, rating)
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        // Validate rating is in range 0-5
+        let validRating = min(max(rating, 0), 5)
+        
+        let photo = DatabaseTables.photoFiles.filter(DatabaseTables.photoId == photoId)
+        try db.run(photo.update(DatabaseTables.photoRating <- validRating))
+        NSLog("✅ DatabaseManager: Updated rating to %d", validRating)
+    }
+    
+    func updatePhotoColorTag(_ photoId: Int64, colorTag: String?) throws {
+        NSLog("🎨 DatabaseManager: updatePhotoColorTag called for ID: %lld, color: %@", photoId, colorTag ?? "nil")
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        let photo = DatabaseTables.photoFiles.filter(DatabaseTables.photoId == photoId)
+        try db.run(photo.update(DatabaseTables.photoColorTag <- colorTag))
+        NSLog("✅ DatabaseManager: Updated color tag")
+    }
+    
+    func searchPhotos(query: String, minRating: Int? = nil, colorTag: String? = nil) throws -> [PhotoFile] {
+        NSLog("🔍 DatabaseManager: Searching - query: %@, minRating: %@, colorTag: %@", 
+              query, String(describing: minRating), colorTag ?? "nil")
         guard let db = db else { throw DatabaseError.connectionFailed }
         
         var photos: [PhotoFile] = []
         let searchPattern = "%\(query)%"
         
-        // Search across filename, path, description, and tags
-        let searchQuery = DatabaseTables.photoFiles.filter(
-            DatabaseTables.photoFileName.like(searchPattern) ||
-            DatabaseTables.photoRelativePath.like(searchPattern) ||
-            DatabaseTables.photoUserDescription.like(searchPattern) ||
-            DatabaseTables.photoUserTags.like(searchPattern)
-        )
+        // Build search query with optional rating and color filters
+        var searchQuery = DatabaseTables.photoFiles
+        
+        // Text search
+        if !query.isEmpty {
+            searchQuery = searchQuery.filter(
+                DatabaseTables.photoFileName.like(searchPattern) ||
+                DatabaseTables.photoRelativePath.like(searchPattern) ||
+                DatabaseTables.photoUserDescription.like(searchPattern) ||
+                DatabaseTables.photoUserTags.like(searchPattern)
+            )
+        }
+        
+        // Rating filter
+        if let minRating = minRating {
+            searchQuery = searchQuery.filter(DatabaseTables.photoRating >= minRating)
+        }
+        
+        // Color tag filter
+        if let colorTag = colorTag {
+            searchQuery = searchQuery.filter(DatabaseTables.photoColorTag == colorTag)
+        }
         
         for row in try db.prepare(searchQuery) {
             photos.append(PhotoFile(
@@ -709,10 +768,92 @@ class DatabaseManager: ObservableObject {
                 hasThumbnail: row[DatabaseTables.photoHasThumbnail],
                 thumbnailPath: row[DatabaseTables.photoThumbnailPath],
                 userDescription: row[DatabaseTables.photoUserDescription],
-                userTags: row[DatabaseTables.photoUserTags]
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
             ))
         }
         
+        return photos
+    }
+    
+    func getPhotosByRating(minRating: Int) throws -> [PhotoFile] {
+        NSLog("⭐ DatabaseManager: Getting photos with rating >= %d", minRating)
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        var photos: [PhotoFile] = []
+        let query = DatabaseTables.photoFiles.filter(DatabaseTables.photoRating >= minRating)
+        
+        for row in try db.prepare(query) {
+            photos.append(PhotoFile(
+                id: row[DatabaseTables.photoId],
+                rootDirectoryId: row[DatabaseTables.photoRootDirId],
+                relativePath: row[DatabaseTables.photoRelativePath],
+                fileName: row[DatabaseTables.photoFileName],
+                fileExtension: row[DatabaseTables.photoFileExtension],
+                fileSize: row[DatabaseTables.photoFileSize],
+                fileHash: row[DatabaseTables.photoFileHash],
+                createdAt: row[DatabaseTables.photoCreatedAt],
+                modifiedAt: row[DatabaseTables.photoModifiedAt],
+                exifDateTaken: row[DatabaseTables.photoExifDateTaken],
+                exifCameraModel: row[DatabaseTables.photoExifCameraModel],
+                exifLensModel: row[DatabaseTables.photoExifLensModel],
+                exifFocalLength: row[DatabaseTables.photoExifFocalLength],
+                exifAperture: row[DatabaseTables.photoExifAperture],
+                exifIso: row[DatabaseTables.photoExifIso],
+                exifShutterSpeed: row[DatabaseTables.photoExifShutterSpeed],
+                imageWidth: row[DatabaseTables.photoImageWidth],
+                imageHeight: row[DatabaseTables.photoImageHeight],
+                hasThumbnail: row[DatabaseTables.photoHasThumbnail],
+                thumbnailPath: row[DatabaseTables.photoThumbnailPath],
+                userDescription: row[DatabaseTables.photoUserDescription],
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
+            ))
+        }
+        
+        NSLog("✅ DatabaseManager: Found %d photos with rating >= %d", photos.count, minRating)
+        return photos
+    }
+    
+    func getPhotosByColorTag(_ colorTag: String) throws -> [PhotoFile] {
+        NSLog("🎨 DatabaseManager: Getting photos with color tag: %@", colorTag)
+        guard let db = db else { throw DatabaseError.connectionFailed }
+        
+        var photos: [PhotoFile] = []
+        let query = DatabaseTables.photoFiles.filter(DatabaseTables.photoColorTag == colorTag)
+        
+        for row in try db.prepare(query) {
+            photos.append(PhotoFile(
+                id: row[DatabaseTables.photoId],
+                rootDirectoryId: row[DatabaseTables.photoRootDirId],
+                relativePath: row[DatabaseTables.photoRelativePath],
+                fileName: row[DatabaseTables.photoFileName],
+                fileExtension: row[DatabaseTables.photoFileExtension],
+                fileSize: row[DatabaseTables.photoFileSize],
+                fileHash: row[DatabaseTables.photoFileHash],
+                createdAt: row[DatabaseTables.photoCreatedAt],
+                modifiedAt: row[DatabaseTables.photoModifiedAt],
+                exifDateTaken: row[DatabaseTables.photoExifDateTaken],
+                exifCameraModel: row[DatabaseTables.photoExifCameraModel],
+                exifLensModel: row[DatabaseTables.photoExifLensModel],
+                exifFocalLength: row[DatabaseTables.photoExifFocalLength],
+                exifAperture: row[DatabaseTables.photoExifAperture],
+                exifIso: row[DatabaseTables.photoExifIso],
+                exifShutterSpeed: row[DatabaseTables.photoExifShutterSpeed],
+                imageWidth: row[DatabaseTables.photoImageWidth],
+                imageHeight: row[DatabaseTables.photoImageHeight],
+                hasThumbnail: row[DatabaseTables.photoHasThumbnail],
+                thumbnailPath: row[DatabaseTables.photoThumbnailPath],
+                userDescription: row[DatabaseTables.photoUserDescription],
+                userTags: row[DatabaseTables.photoUserTags],
+                rating: (try? row.get(DatabaseTables.photoRating)) ?? 0,
+                colorTag: try? row.get(DatabaseTables.photoColorTag)
+            ))
+        }
+        
+        NSLog("✅ DatabaseManager: Found %d photos with color tag: %@", photos.count, colorTag)
         return photos
     }
     
