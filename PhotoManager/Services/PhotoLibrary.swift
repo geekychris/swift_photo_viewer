@@ -158,41 +158,97 @@ class PhotoLibrary: ObservableObject {
     
     func movePhotoToTrash(_ photo: PhotoFile) {
         print("🗑️ PhotoLibrary: Moving photo to trash: \(photo.fileName)")
+        print("   Root directory ID: \(photo.rootDirectoryId)")
+        print("   Relative path: \(photo.relativePath)")
+        
+        // Find the root directory to get bookmark data
+        guard let rootDir = rootDirectories.first(where: { $0.id == photo.rootDirectoryId }) else {
+            let error = "Root directory not found for ID: \(photo.rootDirectoryId)"
+            print("❌ PhotoLibrary: \(error)")
+            errorMessage = error
+            return
+        }
+        
+        // Start accessing security-scoped resource if bookmark data exists
+        var securityScopedURL: URL?
+        if let bookmarkData = rootDir.bookmarkData {
+            do {
+                var isStale = false
+                securityScopedURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                
+                if isStale {
+                    print("⚠️ PhotoLibrary: Bookmark data is stale for directory: \(rootDir.name)")
+                }
+                
+                if let url = securityScopedURL {
+                    let didStartAccessing = url.startAccessingSecurityScopedResource()
+                    print("🔓 PhotoLibrary: Started security-scoped access: \(didStartAccessing)")
+                }
+            } catch {
+                print("⚠️ PhotoLibrary: Failed to resolve bookmark: \(error.localizedDescription)")
+            }
+        } else {
+            print("⚠️ PhotoLibrary: No bookmark data for root directory: \(rootDir.name)")
+        }
+        
+        // Ensure we stop accessing the resource when done
+        defer {
+            if let url = securityScopedURL {
+                url.stopAccessingSecurityScopedResource()
+                print("🔒 PhotoLibrary: Stopped security-scoped access")
+            }
+        }
         
         do {
-            // Get the full file path
-            let rootDir = rootDirectories.first(where: { $0.id == photo.rootDirectoryId })
-            guard let rootPath = rootDir?.path else {
-                throw DatabaseError.queryFailed("Root directory not found for photo")
+            // Get the absolute full file path using extension
+            guard let fullPath = photo.getAbsoluteFullPath(rootDirectories: rootDirectories) else {
+                let error = "Could not construct absolute path for file: \(photo.fileName)"
+                print("❌ PhotoLibrary: \(error)")
+                throw DatabaseError.queryFailed(error)
             }
             
-            let fullPath = (rootPath as NSString).appendingPathComponent(photo.relativePath)
             let fileURL = URL(fileURLWithPath: fullPath)
             
-            print("   Full path: \(fullPath)")
+            print("   Absolute path: \(fullPath)")
+            print("   File URL: \(fileURL.path)")
             
             // Check if file exists
             if FileManager.default.fileExists(atPath: fullPath) {
+                print("   File exists, attempting to move to trash...")
                 // Move to trash
-                try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
-                print("✅ PhotoLibrary: Moved file to trash")
+                var resultingURL: NSURL?
+                try FileManager.default.trashItem(at: fileURL, resultingItemURL: &resultingURL)
+                if let trashedPath = resultingURL?.path {
+                    print("✅ PhotoLibrary: Moved file to trash at: \(trashedPath)")
+                } else {
+                    print("✅ PhotoLibrary: Moved file to trash")
+                }
             } else {
-                print("⚠️ PhotoLibrary: File doesn't exist, will still remove from database")
+                print("⚠️ PhotoLibrary: File doesn't exist at path: \(fullPath)")
+                print("   Will still remove from database")
             }
+            
+            // Delete thumbnail
+            try? thumbnailService.deleteThumbnail(for: photo)
+            print("✅ PhotoLibrary: Deleted thumbnail")
             
             // Remove from database
             if let photoId = photo.id {
                 try databaseManager.deletePhoto(photoId)
-                print("✅ PhotoLibrary: Removed from database")
+                print("✅ PhotoLibrary: Removed from database (ID: \(photoId))")
             }
             
-            // Refresh duplicates
-            loadDuplicates()
+            // Note: Don't refresh duplicates here - caller should batch refresh
+            // after multiple deletions to avoid rescanning database for each file
             objectWillChange.send()
             
         } catch {
-            errorMessage = "Failed to move photo to trash: \(error.localizedDescription)"
-            print("❌ PhotoLibrary: \(errorMessage!)")
+            let fullError = "Failed to move photo to trash: \(error.localizedDescription)"
+            errorMessage = fullError
+            print("❌ PhotoLibrary: \(fullError)")
+            print("   File: \(photo.fileName)")
+            print("   Relative path: \(photo.relativePath)")
+            print("   Root directory ID: \(photo.rootDirectoryId)")
         }
     }
     
@@ -204,23 +260,24 @@ class PhotoLibrary: ObservableObject {
         
         for file in dirInfo.files {
             do {
-                // Get full path
-                let rootDir = rootDirectories.first(where: { $0.id == file.rootDirectoryId })
-                guard let rootPath = rootDir?.path else {
-                    print("⚠️ Root directory not found for: \(file.fileName)")
+                // Get absolute full path using extension
+                guard let fullPath = file.getAbsoluteFullPath(rootDirectories: rootDirectories) else {
+                    print("⚠️ Could not construct absolute path for: \(file.fileName)")
                     failureCount += 1
                     continue
                 }
                 
-                let fullPath = (rootPath as NSString).appendingPathComponent(file.relativePath)
                 let fileURL = URL(fileURLWithPath: fullPath)
                 
                 // Move to trash if exists
                 if FileManager.default.fileExists(atPath: fullPath) {
                     try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
                 } else {
-                    print("⚠️ File doesn't exist: \(file.fileName)")
+                    print("⚠️ File doesn't exist: \(file.fileName) at \(fullPath)")
                 }
+                
+                // Delete thumbnail
+                try? thumbnailService.deleteThumbnail(for: file)
                 
                 // Remove from database
                 if let photoId = file.id {
@@ -420,15 +477,15 @@ class PhotoLibrary: ObservableObject {
             var csvContent = ""
             
             if includeDirectoryView {
-                // Export directory-based duplicates
+                // Export directory-based duplicates (already uses fullPath which is absolute)
                 csvContent += "Directory Path,Total Files,Duplicate Files,Duplicate %,Total Size,Wasted Size\n"
                 
                 for dirInfo in directoryDuplicates {
                     let totalSizeStr = ByteCountFormatter().string(fromByteCount: dirInfo.totalSize)
                     let wastedSizeStr = ByteCountFormatter().string(fromByteCount: dirInfo.wastedSize)
                     let duplicatePercent = String(format: "%.1f", dirInfo.duplicatePercentage)
-                    
-                    csvContent += "\"\(dirInfo.directoryPath)\",\(dirInfo.fileCount),\(dirInfo.duplicateFileCount),\(duplicatePercent)%,\(totalSizeStr),\(wastedSizeStr)\n"
+                    // Use fullPath (absolute) instead of directoryPath (which might be relative)
+                    csvContent += "\"\(dirInfo.fullPath)\",\(dirInfo.fileCount),\(dirInfo.duplicateFileCount),\(duplicatePercent)%,\(totalSizeStr),\(wastedSizeStr)\n"
                 }
                 
                 csvContent += "\n\nComplete Duplicate Directories\n"
@@ -445,11 +502,24 @@ class PhotoLibrary: ObservableObject {
                 csvContent += "File Hash,Duplicate Count,Total Size,File Name,Locations\n"
                 
                 for group in duplicateGroups {
-                    let totalSizeStr = ByteCountFormatter().string(fromByteCount: group.totalSize)
-                    let fileName = group.files.first?.fileName ?? ""
-                    let locations = group.files.map { $0.relativePath }.joined(separator: "; ")
+                    // Filter files to only those with valid absolute paths
+                    let filesWithValidPaths = group.files.compactMap { file -> (file: PhotoFile, path: String)? in
+                        guard let absolutePath = file.getAbsoluteFullPath(rootDirectories: rootDirectories) else {
+                            return nil
+                        }
+                        return (file, absolutePath)
+                    }
                     
-                    csvContent += "\"\(group.fileHash)\",\(group.duplicateCount),\(totalSizeStr),\"\(fileName)\",\"\(locations)\"\n"
+                    // Skip groups with no valid paths
+                    guard !filesWithValidPaths.isEmpty else { continue }
+                    
+                    let actualDuplicateCount = filesWithValidPaths.count
+                    let totalSize = filesWithValidPaths.reduce(0) { $0 + $1.file.fileSize }
+                    let totalSizeStr = ByteCountFormatter().string(fromByteCount: totalSize)
+                    let fileName = filesWithValidPaths.first?.file.fileName ?? ""
+                    let locations = filesWithValidPaths.map { $0.path }.joined(separator: "; ")
+                    
+                    csvContent += "\"\(group.fileHash)\",\(actualDuplicateCount),\(totalSizeStr),\"\(fileName)\",\"\(locations)\"\n"
                 }
             }
             

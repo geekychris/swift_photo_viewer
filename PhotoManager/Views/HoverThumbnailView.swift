@@ -100,6 +100,18 @@ class AppKitHoverThumbnailView: NSView {
         guard let photo = photo, let photoLibrary = photoLibrary else { return }
         guard popover == nil else { return } // Don't show if already showing
         
+        // Safety check: make sure we're in a window
+        guard self.window != nil else {
+            print("Cannot show popover - view not in window")
+            return
+        }
+        
+        // Safety check: make sure bounds are valid
+        guard bounds.width > 0 && bounds.height > 0 else {
+            print("Cannot show popover - invalid bounds")
+            return
+        }
+        
         let popover = NSPopover()
         popover.behavior = .semitransient
         popover.contentViewController = HoverPreviewViewController(photo: photo, photoLibrary: photoLibrary)

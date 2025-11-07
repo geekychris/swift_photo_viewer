@@ -4,26 +4,26 @@ struct DuplicatesSidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var sidebarWidth: CGFloat
     @Binding var selectedPhoto: PhotoFile?
-    @State private var expandedGroups: Set<String> = []
-    @State private var viewMode: DuplicateViewMode = .byFile
     @State private var showingExportSuccess = false
     @State private var exportedFileURL: URL?
+    @State private var viewMode: ViewMode = .allDuplicates
     
-    enum DuplicateViewMode: String, CaseIterable {
-        case byFile = "By File"
-        case byDirectory = "By Directory"
+    enum ViewMode: String, CaseIterable {
+        case allDuplicates = "All Duplicates"
+        case directoryComparison = "Compare Directories"
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            // Segmented control and export button
+            // Mode toggle and export button
             HStack {
                 Picker("View Mode", selection: $viewMode) {
-                    ForEach(DuplicateViewMode.allCases, id: \.self) { mode in
+                    ForEach(ViewMode.allCases, id: \.self) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
                 .pickerStyle(SegmentedPickerStyle())
+                .frame(maxWidth: 300)
                 
                 Spacer()
                 
@@ -44,10 +44,10 @@ struct DuplicatesSidebarView: View {
             Divider()
             
             // Content based on view mode
-            if viewMode == .byFile {
-                DuplicatesByFileView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
+            if viewMode == .allDuplicates {
+                SimplifiedDuplicatesView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
             } else {
-                DuplicatesByDirectoryView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
+                DirectoryComparisonView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
             }
         }
         .alert("CSV Exported", isPresented: $showingExportSuccess) {
@@ -65,22 +65,14 @@ struct DuplicatesSidebarView: View {
     }
     
     private func exportToCSV() {
-        if let url = photoLibrary.exportDuplicatesToCSV(includeDirectoryView: viewMode == .byDirectory) {
+        if let url = photoLibrary.exportDuplicatesToCSV(includeDirectoryView: false) {
             exportedFileURL = url
             showingExportSuccess = true
         }
     }
-    
-    private func toggleExpansion(for group: DuplicateGroup) {
-        if expandedGroups.contains(group.fileHash) {
-            expandedGroups.remove(group.fileHash)
-        } else {
-            expandedGroups.insert(group.fileHash)
-        }
-    }
 }
 
-// Extracted the original file-based view
+// Old views kept for reference but not used
 struct DuplicatesByFileView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var sidebarWidth: CGFloat

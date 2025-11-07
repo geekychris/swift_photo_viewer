@@ -337,6 +337,7 @@ struct DirectoryDuplicateRowView: View {
                         Text(dirInfo.fullPath)
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                            .textSelection(.enabled)
                     }
                     
                     Spacer()
@@ -346,18 +347,29 @@ struct DirectoryDuplicateRowView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         
-                        Button {
-                            showingDeleteAllAlert = true
-                        } label: {
-                            HStack(spacing: 2) {
-                                Image(systemName: "trash.fill")
-                                Text("Delete All")
+                        HStack(spacing: 8) {
+                            Button {
+                                openInFinder(dirInfo.fullPath)
+                            } label: {
+                                Image(systemName: "folder")
+                                    .font(.caption2)
                             }
-                            .font(.caption2)
-                            .foregroundColor(.red)
+                            .buttonStyle(PlainButtonStyle())
+                            .help("Open in Finder")
+                            
+                            Button {
+                                showingDeleteAllAlert = true
+                            } label: {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "trash.fill")
+                                    Text("Delete All")
+                                }
+                                .font(.caption2)
+                                .foregroundColor(.red)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .help("Move all \(dirInfo.duplicateFileCount) duplicates to trash")
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .help("Move all \(dirInfo.duplicateFileCount) duplicates to trash")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -395,10 +407,10 @@ struct DirectoryDuplicateRowView: View {
                         .padding(.leading, 20)
                     } else if duplicatesInSameDirectory > 0 && otherDirectoriesWithSameFiles.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(duplicatesInSameDirectory) files have duplicates within this directory")
+                            Text("\(duplicatesInSameDirectory) duplicate sets within this directory")
                                 .font(.caption)
                                 .foregroundColor(.orange)
-                            Text("These files are duplicated internally (not found in other directories)")
+                            Text("Files with the same content (hash) but possibly different names")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -407,23 +419,48 @@ struct DirectoryDuplicateRowView: View {
                         Divider()
                             .padding(.vertical, 4)
                         
-                        // Show individual files
-                        DisclosureGroup("View \(dirInfo.duplicateFileCount) duplicate files") {
-                            ForEach(dirInfo.files) { file in
-                                CompactDuplicateFileRow(file: file, selectedPhoto: $selectedPhoto)
-                            }
-                        }
+                        // Show duplicate groups within same directory
+                        SameDirectoryDuplicatesView(
+                            dirInfo: dirInfo,
+                            selectedPhoto: $selectedPhoto
+                        )
                         .padding(.leading, 20)
                     } else if otherDirectoriesWithSameFiles.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("No duplicate locations found")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("These files are unique to this directory")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                        // Check if there are actual same-directory duplicates to show
+                        let duplicateGroupsInDir = Dictionary(grouping: dirInfo.files, by: { $0.fileHash })
+                            .filter { $0.value.count > 1 }
+                        
+                        if duplicateGroupsInDir.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("No duplicate locations found")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("These files are unique to this directory")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.leading, 20)
+                        } else {
+                            // Show same-directory duplicates instead
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("No files exist in multiple directories")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                                Text("However, this directory has \(duplicateGroupsInDir.count) duplicate sets within itself")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.leading, 20)
+                            
+                            Divider()
+                                .padding(.vertical, 4)
+                            
+                            SameDirectoryDuplicatesView(
+                                dirInfo: dirInfo,
+                                selectedPhoto: $selectedPhoto
+                            )
+                            .padding(.leading, 20)
                         }
-                        .padding(.leading, 20)
                     } else {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("This directory has \(dirInfo.duplicateFileCount) files that are duplicates.")
@@ -443,6 +480,7 @@ struct DirectoryDuplicateRowView: View {
                                     targetDirectoryPath: otherDir,
                                     sharedFileCount: count,
                                     totalDuplicatesInSource: dirInfo.duplicateFileCount,
+                                    sourceFiles: dirInfo.files,
                                     selectedPhoto: $selectedPhoto
                                 )
                             }
@@ -482,6 +520,11 @@ struct DirectoryDuplicateRowView: View {
         } message: {
             Text("Are you sure you want to move all \(dirInfo.duplicateFileCount) duplicate files in this directory to the Trash?\n\nDirectory: \(dirInfo.fullPath)\n\nFiles will be moved to macOS Trash and removed from the database.")
         }
+    }
+    
+    private func openInFinder(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
     }
     
     private func findOtherDirectories() async {
@@ -734,12 +777,15 @@ struct DirectoryDuplicateSummaryRow: View {
     let targetDirectoryPath: String
     let sharedFileCount: Int
     let totalDuplicatesInSource: Int
+    let sourceFiles: [PhotoFile]  // Files from the source directory
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var isExpanded = false
     @State private var overlappingFiles: [(source: PhotoFile, target: PhotoFile)] = []
-    @State private var showingDeleteSourceAlert = false
-    @State private var showingDeleteTargetAlert = false
+    @State private var showingDeleteSourceConfirmation = false
+    @State private var showingDeleteTargetConfirmation = false
+    @State private var filesToDeleteInSheet: [PhotoFile] = []
+    @State private var otherLocationsInSheet: [PhotoFile] = []
     
     private var percentage: Double {
         guard totalDuplicatesInSource > 0 else { return 0 }
@@ -766,6 +812,7 @@ struct DirectoryDuplicateSummaryRow: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(targetDirectoryPath)
                             .font(.caption)
+                            .textSelection(.enabled)
                         
                         HStack {
                             Text("\(sharedFileCount) shared duplicate files")
@@ -791,28 +838,135 @@ struct DirectoryDuplicateSummaryRow: View {
             
             if isExpanded {
                 VStack(alignment: .leading, spacing: 6) {
-                    // Bulk delete options
-                    HStack(spacing: 12) {
-                        Button {
-                            showingDeleteTargetAlert = true
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "trash.fill")
-                                Text("Delete \(sharedFileCount) duplicate files from this directory")
-                            }
-                            .font(.caption2)
-                            .foregroundColor(.red)
+                    // If overlappingFiles is empty after expansion, this means no cross-directory duplicates
+                    if overlappingFiles.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("No files actually exist in both directories")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 8)
+                            
+                            Text("These appear to be same-directory duplicates:")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .padding(.horizontal, 8)
+                                .padding(.top, 4)
+                            
+                            // Show same-directory duplicates instead
+                            SameDirectoryDuplicatesView(
+                                dirInfo: DirectoryDuplicateInfo(
+                                    directoryPath: sourceDirectoryPath,
+                                    fullPath: sourceDirectoryPath,
+                                    fileCount: sourceFiles.count,
+                                    duplicateFileCount: sourceFiles.count,
+                                    totalSize: sourceFiles.reduce(0) { $0 + $1.fileSize },
+                                    wastedSize: 0,
+                                    files: sourceFiles,
+                                    rootDirectoryId: sourceFiles.first?.rootDirectoryId ?? 0
+                                ),
+                                selectedPhoto: $selectedPhoto
+                            )
                         }
-                        .buttonStyle(.borderless)
-                        .help("Delete only the duplicate files found in both directories. Other files in this directory will be kept.")
+                    } else {
+                        // We have actual overlapping files - show delete options
+                        VStack(spacing: 8) {
+                        Text("Delete duplicates from:")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                        
+                        HStack(spacing: 12) {
+                            // Delete from this directory (target)
+                            Button {
+                                let logFile = FileManager.default.temporaryDirectory.appendingPathComponent("photomanager_debug.txt")
+                                var log = "=== DELETE TARGET BUTTON CLICKED ===\n"
+                                log += "Time: \(Date())\n"
+                                log += "Source: \(sourceDirectoryPath)\n"
+                                log += "Target: \(targetDirectoryPath)\n"
+                                log += "Shared file count: \(sharedFileCount)\n"
+                                
+                                if overlappingFiles.isEmpty {
+                                    log += "overlappingFiles is EMPTY, calling findOverlappingFiles()\n"
+                                    findOverlappingFiles()
+                                    log += "After findOverlappingFiles: \(overlappingFiles.count) items\n"
+                                } else {
+                                    log += "overlappingFiles already has \(overlappingFiles.count) items\n"
+                                }
+                                
+                                if overlappingFiles.isEmpty {
+                                    log += "ERROR: Still empty after findOverlappingFiles!\n"
+                                } else {
+                                    filesToDeleteInSheet = overlappingFiles.map { $0.target }
+                                    otherLocationsInSheet = overlappingFiles.map { $0.source }
+                                    log += "Captured \(filesToDeleteInSheet.count) files for sheet\n"
+                                    if !filesToDeleteInSheet.isEmpty {
+                                        log += "First file: \(filesToDeleteInSheet[0].fileName)\n"
+                                    }
+                                }
+                                
+                                try? log.write(to: logFile, atomically: true, encoding: .utf8)
+                                NSWorkspace.shared.activateFileViewerSelecting([logFile])
+                                
+                                showingDeleteTargetConfirmation = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "trash.fill")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("This Directory")
+                                            .fontWeight(.medium)
+                                        Text(targetDirectoryPath)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundColor(.red)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+                            .help("Delete \(sharedFileCount) duplicate files from this directory. Files in the source directory will be kept.")
+                            
+                            // Delete from source directory
+                            Button {
+                                if overlappingFiles.isEmpty {
+                                    print("⚠️ overlappingFiles is empty, finding files first")
+                                    findOverlappingFiles()
+                                } else {
+                                    print("✅ overlappingFiles already has \(overlappingFiles.count) items")
+                                }
+                                print("Opening delete source confirmation with \(overlappingFiles.count) files")
+                                if overlappingFiles.isEmpty {
+                                    print("❌ ERROR: Still empty after findOverlappingFiles!")
+                                } else {
+                                    // Capture the arrays NOW for the sheet
+                                    filesToDeleteInSheet = overlappingFiles.map { $0.source }
+                                    otherLocationsInSheet = overlappingFiles.map { $0.target }
+                                    print("📦 Captured \(filesToDeleteInSheet.count) files for sheet")
+                                }
+                                showingDeleteSourceConfirmation = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "trash.fill")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Source Directory")
+                                            .fontWeight(.medium)
+                                        Text(sourceDirectoryPath)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.orange)
+                            .help("Delete \(sharedFileCount) duplicate files from the source directory. Files in this directory will be kept.")
+                        }
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.red.opacity(0.05))
-                    .cornerRadius(4)
-                    
-                    // Show overlapping files
-                    if !overlappingFiles.isEmpty {
+                    .padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.05))
+                    .cornerRadius(6)
+                        
+                        // Show overlapping files list
                         Text("Overlapping files:")
                             .font(.caption2)
                             .foregroundColor(.secondary)
@@ -834,20 +988,50 @@ struct DirectoryDuplicateSummaryRow: View {
                 .padding(.top, 4)
             }
         }
-        .alert("Delete Duplicate Files", isPresented: $showingDeleteTargetAlert) {
-            Button("Move \(sharedFileCount) Files to Trash", role: .destructive) {
-                deleteFilesFromTargetDirectory()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This will move \(sharedFileCount) duplicate files from:\n'\(targetDirectoryPath)'\nto the Trash.\n\nThese are copies of files that also exist in:\n'\(sourceDirectoryPath)'\n\nOnly the duplicate files will be deleted. Other unique files in the directory will be kept.")
+        .sheet(isPresented: $showingDeleteTargetConfirmation) {
+            DuplicateDeletionConfirmationView(
+                filesToDelete: filesToDeleteInSheet,
+                otherLocations: otherLocationsInSheet,
+                directoryPath: targetDirectoryPath,
+                onConfirm: {
+                    deleteFilesFromTargetDirectory()
+                    showingDeleteTargetConfirmation = false
+                },
+                onCancel: {
+                    showingDeleteTargetConfirmation = false
+                },
+                selectedPhoto: $selectedPhoto
+            )
+            .environmentObject(photoLibrary)
+        }
+        .sheet(isPresented: $showingDeleteSourceConfirmation) {
+            DuplicateDeletionConfirmationView(
+                filesToDelete: filesToDeleteInSheet,
+                otherLocations: otherLocationsInSheet,
+                directoryPath: sourceDirectoryPath,
+                onConfirm: {
+                    deleteFilesFromSourceDirectory()
+                    showingDeleteSourceConfirmation = false
+                },
+                onCancel: {
+                    showingDeleteSourceConfirmation = false
+                },
+                selectedPhoto: $selectedPhoto
+            )
+            .environmentObject(photoLibrary)
         }
     }
     
     private func findOverlappingFiles() {
+        print("🔍 findOverlappingFiles called")
+        print("   Source: \(sourceDirectoryPath)")
+        print("   Target: \(targetDirectoryPath)")
+        print("   Shared file count: \(sharedFileCount)")
+        
         var pairs: [(source: PhotoFile, target: PhotoFile)] = []
         
         // Find all duplicate groups and locate overlapping files
+        print("   Total duplicate groups: \(photoLibrary.duplicateGroups.count)")
         for group in photoLibrary.duplicateGroups {
             // Find files in target directory
             let filesInTarget = group.files.filter { file in
@@ -869,16 +1053,27 @@ struct DirectoryDuplicateSummaryRow: View {
             
             // If this file exists in both directories, add to pairs
             if let targetFile = filesInTarget.first, let sourceFile = filesInSource.first {
+                print("   ✅ Found pair: \(sourceFile.fileName) <-> \(targetFile.fileName)")
                 pairs.append((source: sourceFile, target: targetFile))
+            } else if filesInTarget.count > 0 || filesInSource.count > 0 {
+                print("   ⚠️ Mismatch - Target: \(filesInTarget.count), Source: \(filesInSource.count) for hash \(String(group.fileHash.prefix(8)))")
             }
         }
         
+        print("   📊 Total pairs found: \(pairs.count)")
         overlappingFiles = pairs.sorted { $0.source.fileName < $1.source.fileName }
+        print("   ✨ overlappingFiles set to \(overlappingFiles.count) items")
     }
     
     private func deleteFilesFromTargetDirectory() {
         for pair in overlappingFiles {
             photoLibrary.movePhotoToTrash(pair.target)
+        }
+    }
+    
+    private func deleteFilesFromSourceDirectory() {
+        for pair in overlappingFiles {
+            photoLibrary.movePhotoToTrash(pair.source)
         }
     }
 }
@@ -942,6 +1137,219 @@ struct OverlappingFileRow: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+}
+
+struct SameDirectoryDuplicatesView: View {
+    let dirInfo: DirectoryDuplicateInfo
+    @Binding var selectedPhoto: PhotoFile?
+    @EnvironmentObject var photoLibrary: PhotoLibrary
+    @State private var showingDeleteAllAlert = false
+    @State private var showingDeleteSelectedAlert = false
+    @State private var selectedFilesForDeletion: Set<Int64> = []  // Track selected file IDs
+    
+    // Group files by hash to show duplicate sets
+    private var duplicateGroups: [String: [PhotoFile]] {
+        Dictionary(grouping: dirInfo.files, by: { $0.fileHash })
+            .filter { $0.value.count > 1 }
+    }
+    
+    // Get all duplicates except keep the first one in each group
+    private var duplicatesToDelete: [PhotoFile] {
+        duplicateGroups.values.flatMap { files in
+            Array(files.dropFirst()) // Keep first, delete rest
+        }
+    }
+    
+    // Get selected files for deletion
+    private var selectedFiles: [PhotoFile] {
+        dirInfo.files.filter { file in
+            if let id = file.id {
+                return selectedFilesForDeletion.contains(id)
+            }
+            return false
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Action buttons
+            HStack {
+                Text("\(duplicateGroups.count) duplicate sets")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                if !selectedFilesForDeletion.isEmpty {
+                    Text("• \(selectedFilesForDeletion.count) selected")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+                
+                Spacer()
+                
+                if !selectedFilesForDeletion.isEmpty {
+                    Button {
+                        showingDeleteSelectedAlert = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash.fill")
+                            Text("Delete Selected (\(selectedFilesForDeletion.count))")
+                        }
+                        .font(.caption2)
+                        .foregroundColor(.red)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    
+                    Button {
+                        selectedFilesForDeletion.removeAll()
+                    } label: {
+                        Text("Clear Selection")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                
+                Button {
+                    showingDeleteAllAlert = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash.fill")
+                        Text("Delete All Duplicates")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .help("Keep first file in each set, delete the rest (\(duplicatesToDelete.count) files)")
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color.orange.opacity(0.05))
+            .cornerRadius(6)
+            
+            ForEach(Array(duplicateGroups.keys.sorted()), id: \.self) { hash in
+                if let files = duplicateGroups[hash] {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Image(systemName: "doc.on.doc.fill")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                            
+                            Text("\(files.count) copies (\(String(hash.prefix(12)))...)")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.orange)
+                            
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            
+                            Text(ByteCountFormatter().string(fromByteCount: files[0].fileSize))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(4)
+                        
+                        // Show each file in the duplicate set
+                        ForEach(files) { file in
+                            HStack(spacing: 6) {
+                                // Checkbox for selection
+                                if let fileId = file.id {
+                                    Button {
+                                        if selectedFilesForDeletion.contains(fileId) {
+                                            selectedFilesForDeletion.remove(fileId)
+                                        } else {
+                                            selectedFilesForDeletion.insert(fileId)
+                                        }
+                                    } label: {
+                                        Image(systemName: selectedFilesForDeletion.contains(fileId) ? "checkmark.square.fill" : "square")
+                                            .foregroundColor(selectedFilesForDeletion.contains(fileId) ? .blue : .gray)
+                                            .font(.body)
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
+                                
+                                // Thumbnail with hover and click
+                                ReusableHoverThumbnail(photo: file, size: 40, onTap: {
+                                    selectedPhoto = file
+                                })
+                                .environmentObject(photoLibrary)
+                                
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(file.fileName)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    
+                                    HStack(spacing: 4) {
+                                        if let dateTaken = file.exifDateTaken {
+                                            Text(dateTaken, style: .date)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        
+                                        Text("•")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        
+                                        Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                
+                                Spacer()
+                                
+                                Button {
+                                    photoLibrary.movePhotoToTrash(file)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.red)
+                                        .font(.caption2)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .help("Move to trash")
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(
+                                selectedFilesForDeletion.contains(file.id ?? 0) 
+                                    ? Color.blue.opacity(0.1) 
+                                    : Color.gray.opacity(0.05)
+                            )
+                            .cornerRadius(4)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .alert("Delete Same-Directory Duplicates", isPresented: $showingDeleteAllAlert) {
+            Button("Keep First, Delete \(duplicatesToDelete.count) Others", role: .destructive) {
+                for file in duplicatesToDelete {
+                    photoLibrary.movePhotoToTrash(file)
+                }
+                selectedFilesForDeletion.removeAll()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will keep the first file in each duplicate set and delete the others.\n\n\(duplicatesToDelete.count) files will be moved to the Trash.\n\nYou can restore them from Trash if needed.")
+        }
+        .alert("Delete Selected Files", isPresented: $showingDeleteSelectedAlert) {
+            Button("Move \(selectedFiles.count) Files to Trash", role: .destructive) {
+                for file in selectedFiles {
+                    photoLibrary.movePhotoToTrash(file)
+                }
+                selectedFilesForDeletion.removeAll()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Move \(selectedFiles.count) selected files to the Trash?\n\nYou can restore them from Trash if needed.")
+        }
     }
 }
 
