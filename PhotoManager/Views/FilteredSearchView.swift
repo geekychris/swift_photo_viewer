@@ -14,6 +14,9 @@ struct FilteredSearchView: View {
     let maxISO: Int?
     let minRating: Int
     let selectedColors: Set<String>
+    let filterDirectoryId: Int64?
+    let filterSubdirectoryPath: String?
+    let filterTimelinePeriod: String?
     @Binding var selectedPhoto: PhotoFile?
     
     @EnvironmentObject var photoLibrary: PhotoLibrary
@@ -24,19 +27,66 @@ struct FilteredSearchView: View {
         [GridItem(.adaptive(minimum: thumbnailSize, maximum: thumbnailSize + 100), spacing: 16)]
     }
     
+    private var searchContext: String? {
+        if let directoryId = filterDirectoryId {
+            if let directory = photoLibrary.rootDirectories.first(where: { $0.id == directoryId }) {
+                if let subdir = filterSubdirectoryPath {
+                    return "📁 \(directory.name) › \(subdir)"
+                } else {
+                    return "📁 \(directory.name)"
+                }
+            }
+            return "📁 Directory"
+        } else if let period = filterTimelinePeriod {
+            // Format the period nicely
+            let formatter = DateFormatter()
+            if period.contains("W") {
+                let parts = period.split(separator: "-")
+                if parts.count == 2, let weekNum = parts[1].dropFirst().description as String? {
+                    return "📅 Week \(weekNum), \(parts[0])"
+                }
+            } else if period.count == 10 {
+                formatter.dateFormat = "yyyy-MM-dd"
+                if let date = formatter.date(from: period) {
+                    formatter.dateFormat = "MMM d, yyyy"
+                    return "📅 \(formatter.string(from: date))"
+                }
+            } else {
+                formatter.dateFormat = "yyyy-MM"
+                if let date = formatter.date(from: period) {
+                    formatter.dateFormat = "MMMM yyyy"
+                    return "📅 \(formatter.string(from: date))"
+                }
+            }
+            return "📅 Timeline"
+        }
+        return nil
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
-            // Header with result count
-            HStack {
-                Text("Search Results")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
+            // Header with result count and context
+            VStack(spacing: 4) {
+                HStack {
+                    Text("Search Results")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    
+                    Spacer()
+                    
+                    Text("\(filteredPhotos.count) photos found")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 
-                Spacer()
-                
-                Text("\(filteredPhotos.count) photos found")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if let context = searchContext {
+                    HStack {
+                        Text("Searching in: \(context)")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                        Spacer()
+                    }
+                }
             }
             .padding()
             
@@ -127,42 +177,123 @@ struct FilteredSearchView: View {
         .onChange(of: selectedColors) { _, _ in
             performFilteredSearch()
         }
+        .onChange(of: filterDirectoryId) { _, _ in
+            performFilteredSearch()
+        }
+        .onChange(of: filterSubdirectoryPath) { _, _ in
+            performFilteredSearch()
+        }
+        .onChange(of: filterTimelinePeriod) { _, _ in
+            performFilteredSearch()
+        }
     }
     
     private func performFilteredSearch() {
         logger.info("Performing filtered search")
         
-        // Start with text search if provided
+        // Start with context-scoped photos
         var results: [PhotoFile] = []
         
-        if !searchText.isEmpty {
-            results = photoLibrary.searchPhotos(query: searchText)
-            logger.info("Text search returned \(results.count) results")
-        } else {
-            // Get all photos from all directories
+        // Determine initial photo set based on context (directory, timeline, or all)
+        if let directoryId = filterDirectoryId {
+            // Directory view context
+            var directoryPhotos = photoLibrary.getPhotosForDirectory(directoryId)
+            
+            // Apply subdirectory filter if specified
+            if let subdir = filterSubdirectoryPath {
+                directoryPhotos = directoryPhotos.filter { photo in
+                    let pathComponents = photo.relativePath.split(separator: "/")
+                    if pathComponents.count > 1 {
+                        let firstComponent = String(pathComponents[0])
+                        return firstComponent == subdir
+                    } else {
+                        return subdir == "Root"
+                    }
+                }
+                logger.info("Scoped to subdirectory '\(subdir)': \(directoryPhotos.count) photos")
+            }
+            
+            results = directoryPhotos
+            logger.info("Scoped to directory \(directoryId): \(results.count) photos")
+        } else if let timelinePeriod = filterTimelinePeriod {
+            // Timeline view context
             for directory in photoLibrary.rootDirectories {
                 if let directoryId = directory.id {
                     results.append(contentsOf: photoLibrary.getPhotosForDirectory(directoryId))
                 }
             }
-            logger.info("Loaded all \(results.count) photos for filtering")
+            
+            // Filter by timeline period
+            results = results.filter { photo in
+                let photoDate = photo.exifDateTaken ?? photo.createdAt
+                let formatter = DateFormatter()
+                
+                // Determine period format based on pattern
+                if timelinePeriod.contains("W") {
+                    // Weekly format: "yyyy-Www"
+                    formatter.dateFormat = "yyyy"
+                    let calendar = Calendar.current
+                    let year = formatter.string(from: photoDate)
+                    let weekOfYear = calendar.component(.weekOfYear, from: photoDate)
+                    let photoWeek = String(format: "%@-W%02d", year, weekOfYear)
+                    return photoWeek == timelinePeriod
+                } else if timelinePeriod.count == 10 {
+                    // Daily format: "yyyy-MM-dd"
+                    formatter.dateFormat = "yyyy-MM-dd"
+                    return formatter.string(from: photoDate) == timelinePeriod
+                } else {
+                    // Monthly format: "yyyy-MM"
+                    formatter.dateFormat = "yyyy-MM"
+                    return formatter.string(from: photoDate) == timelinePeriod
+                }
+            }
+            logger.info("Scoped to timeline period '\(timelinePeriod)': \(results.count) photos")
+        } else {
+            // No specific context - search all photos
+            for directory in photoLibrary.rootDirectories {
+                if let directoryId = directory.id {
+                    results.append(contentsOf: photoLibrary.getPhotosForDirectory(directoryId))
+                }
+            }
+            logger.info("No scope filter - loaded all \(results.count) photos")
+        }
+        
+        // Now apply text search filter if provided
+        if !searchText.isEmpty {
+            results = results.filter { photo in
+                // Search in filename, description, and tags
+                let filename = photo.fileName.lowercased()
+                let description = (photo.userDescription ?? "").lowercased()
+                let tags = (photo.userTags ?? "").lowercased()
+                let searchLower = searchText.lowercased()
+                
+                return filename.contains(searchLower) ||
+                       description.contains(searchLower) ||
+                       tags.contains(searchLower)
+            }
+            logger.info("After text search: \(results.count) photos")
         }
         
         // Apply date filter
         if let start = startDate {
+            let calendar = Calendar.current
+            let startOfDay = calendar.startOfDay(for: start)
             results = results.filter { photo in
                 let photoDate = photo.exifDateTaken ?? photo.createdAt
-                return photoDate >= start
+                return photoDate >= startOfDay
             }
-            logger.info("After start date filter: \(results.count) photos")
+            logger.info("After start date filter (\(start)): \(results.count) photos")
         }
         
         if let end = endDate {
+            let calendar = Calendar.current
+            // End of the selected day (23:59:59)
+            let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: end) ?? end
             results = results.filter { photo in
                 let photoDate = photo.exifDateTaken ?? photo.createdAt
-                return photoDate <= end
+                return photoDate <= endOfDay
             }
-            logger.info("After end date filter: \(results.count) photos")
+            logger.info("After end date filter (\(end)): \(results.count) photos")
         }
         
         // Apply camera filter

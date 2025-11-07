@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var maxISO: Int?
     @State private var minRating: Int = 0
     @State private var selectedColors: Set<String> = []
+    @State private var selectedTimelinePeriod: String?
     @State private var sidebarWidth: CGFloat = 500
     
     private var colorOptions: [(id: String, name: String, color: Color)] {
@@ -124,23 +125,46 @@ struct ContentView: View {
                                     .foregroundColor(.secondary)
                                 
                                 HStack {
-                                    DatePicker("", selection: Binding(
-                                        get: { startDate ?? Date.distantPast },
-                                        set: { startDate = $0 }
-                                    ), displayedComponents: .date)
-                                    .labelsHidden()
-                                    .onChange(of: startDate) { _, _ in updateSearchState() }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("From")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        if let start = startDate {
+                                            DatePicker("", selection: Binding(
+                                                get: { start },
+                                                set: { startDate = $0 }
+                                            ), displayedComponents: .date)
+                                            .labelsHidden()
+                                        } else {
+                                            Button("Select date") {
+                                                startDate = Date()
+                                                updateSearchState()
+                                            }
+                                            .font(.caption2)
+                                        }
+                                    }
                                     
-                                    Text("to")
-                                        .font(.caption2)
-                                    
-                                    DatePicker("", selection: Binding(
-                                        get: { endDate ?? Date() },
-                                        set: { endDate = $0 }
-                                    ), displayedComponents: .date)
-                                    .labelsHidden()
-                                    .onChange(of: endDate) { _, _ in updateSearchState() }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("To")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        if let end = endDate {
+                                            DatePicker("", selection: Binding(
+                                                get: { end },
+                                                set: { endDate = $0 }
+                                            ), displayedComponents: .date)
+                                            .labelsHidden()
+                                        } else {
+                                            Button("Select date") {
+                                                endDate = Date()
+                                                updateSearchState()
+                                            }
+                                            .font(.caption2)
+                                        }
+                                    }
                                 }
+                                .onChange(of: startDate) { _, _ in updateSearchState() }
+                                .onChange(of: endDate) { _, _ in updateSearchState() }
                                 
                                 if startDate != nil || endDate != nil {
                                     Button("Clear Dates") {
@@ -306,7 +330,11 @@ struct ContentView: View {
                             selectedPhoto: $selectedPhoto
                         )
                     case 1:
-                        TimelineSidebarView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
+                        TimelineSidebarView(
+                            sidebarWidth: $sidebarWidth,
+                            selectedPhoto: $selectedPhoto,
+                            selectedPeriod: $selectedTimelinePeriod
+                        )
                     case 2:
                         DuplicatesSidebarView(sidebarWidth: $sidebarWidth, selectedPhoto: $selectedPhoto)
                     default:
@@ -355,6 +383,9 @@ struct ContentView: View {
                     maxISO: maxISO,
                     minRating: minRating,
                     selectedColors: selectedColors,
+                    filterDirectoryId: selectedDirectoryId,
+                    filterSubdirectoryPath: selectedSubdirectoryPath,
+                    filterTimelinePeriod: selectedTimelinePeriod,
                     selectedPhoto: $selectedPhoto
                 )
             } else {

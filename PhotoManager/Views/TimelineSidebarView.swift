@@ -11,9 +11,9 @@ struct TimelineSidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var sidebarWidth: CGFloat
     @Binding var selectedPhoto: PhotoFile?
+    @Binding var selectedPeriod: String?
     @State private var yearGroups: [(String, [(String, [PhotoFile])])] = []
     @State private var expandedYears: Set<String> = []
-    @State private var selectedYearMonth: String?
     @State private var granularity: TimelineGranularity = .month
     
     var body: some View {
@@ -50,11 +50,11 @@ struct TimelineSidebarView: View {
                                     period: period,
                                     photos: photos,
                                     granularity: granularity,
-                                    isSelected: selectedYearMonth == period,
+                                    isSelected: selectedPeriod == period,
                                     selectedPhoto: $selectedPhoto
                                 )
                                 .onTapGesture {
-                                    selectedYearMonth = period
+                                    selectedPeriod = period
                                 }
                                 
                                 Divider()
