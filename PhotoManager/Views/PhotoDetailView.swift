@@ -480,7 +480,7 @@ struct RatingPicker: View {
     
     var body: some View {
         HStack(spacing: isCompact ? 2 : 4) {
-            ForEach(0..<6) { index in
+            ForEach(1...5, id: \.self) { index in
                 Button {
                     let newRating = rating == index ? 0 : index
                     rating = newRating

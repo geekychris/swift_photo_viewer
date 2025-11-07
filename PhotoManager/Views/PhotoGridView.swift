@@ -266,7 +266,7 @@ struct PhotoThumbnailView: View {
                         VStack(spacing: 6) {
                             // Quick rating picker
                             HStack(spacing: 3) {
-                                ForEach(0..<6) { index in
+                                ForEach(1...5, id: \.self) { index in
                                 Button {
                                     let newRating = rating == index ? 0 : index
                                     rating = newRating

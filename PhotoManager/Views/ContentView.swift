@@ -225,16 +225,17 @@ struct ContentView: View {
                                     .foregroundColor(.secondary)
                                 
                                 HStack(spacing: 3) {
-                                    ForEach(0..<6) { index in
+                                    ForEach(0...5, id: \.self) { index in
                                         Button {
                                             minRating = index
                                             updateSearchState()
                                         } label: {
-                                            Image(systemName: index <= minRating && minRating > 0 ? "flag.fill" : "flag")
-                                                .foregroundColor(index <= minRating && minRating > 0 ? .orange : .gray.opacity(0.4))
+                                            Image(systemName: index > 0 && index <= minRating ? "flag.fill" : "flag")
+                                                .foregroundColor(index > 0 && index <= minRating ? .orange : .gray.opacity(0.4))
                                                 .font(.caption)
                                         }
                                         .buttonStyle(.plain)
+                                        .help("At least \(index) flag\(index == 1 ? "" : "s")")
                                     }
                                 }
                             }
