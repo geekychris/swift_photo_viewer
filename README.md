@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Swift Photo Viewer logo" width="180">
+</p>
+
 # PhotoManager
 
 A comprehensive photo management application for macOS built with Swift and SwiftUI. PhotoManager helps you organize, browse, and manage large photo collections with advanced features like duplicate detection, EXIF data extraction, and hierarchical browsing.
