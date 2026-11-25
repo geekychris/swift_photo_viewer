@@ -41,34 +41,84 @@ And search for keywords in description and tags along with date constraints and 
 
 ![img_5.png](img_5.png)
 
+## Organise Library (Library ▸ Organise Library…, ⇧⌘O)
+
+A workbench for turning years of copied memory cards into one clean library, a group of photos at a time:
+
+1. **Analyse**: pick the library folders. Byte-identical copies collapse to one, RAW+JPEG pairs and Live Photos
+   stay together as one *shot*, and shots are grouped into **sessions** (split on time gaps and big location jumps)
+   and **trips** (runs of busy days). Optional: look up place names for GPS photos (sends ~11 km cells to Apple's geocoder).
+2. **Group & label**: an event tree (e.g. *Asia Trip ▸ Hong Kong ▸ Temples*) next to a timeline of groups. Name a
+   group, assign it to the selected event, drag it onto an event, or open it to pick a subset, file it under a
+   sub-event or tag the people in it. Assignments are saved immediately.
+3. **Near-copies**: shots with several versions of one kind (exports, edits): keep all or keep the best.
+4. **Plan**: choose a separate target folder and preview the tree:
+   `YYYY/YYYY-MM-DD Event/Sub/Sub/` with RAW files in `RAW/` beside their JPEGs, unfiled photos in
+   `YYYY/YYYY-MM Unsorted/`, photos without a trustworthy date in `Undated/<original folder>/`.
+5. **Copy**: each file is copied under a temporary name, verified by SHA-256 and renamed into place; nothing in the
+   target is ever overwritten and an interrupted run resumes. A manifest CSV and XMP sidecars (event path as
+   hierarchical keywords, people, keywords, rating) are written to the target. Afterwards you can add the target
+   to the library and move only originals that have a verified copy to the Trash.
+
+## Library Insights (Library ▸ Library Insights, ⇧⌘I)
+
+Views of the catalogue that don't depend on the folder layout: a pivot of any dimension (year/month/day/weekday/hour,
+trip or event, person, keyword, country/city, camera, lens, focal length, aperture, ISO, file type, rating, date source,
+folder) against an optional second one as bars or a heatmap, a calendar heatmap of shooting days, a map of GPS photos,
+and saved views. Click any bar, cell, day or map bubble to see its photos.
+
+## Safety
+
+- Trashing goes through one guarded path that never removes the last remaining copy of a photo.
+- Rescans update rows in place and never discard ratings, tags, descriptions or event assignments.
+- Files that vanished are dropped from the catalogue only after a complete, error-free listing of a mounted root.
+- Schema migrations write a backup copy of the database first (`PhotoManager.v<N>-backup-<timestamp>.sqlite`).
+
 ## Supported File Formats
 
-- JPEG (.jpg, .jpeg)
-- PNG (.png)
-- TIFF (.tiff, .tif)
-- HEIC/HEIF (.heic, .heif)
-- RAW formats (.raw, .cr2, .nef, .arw, .dng, .orf, .rw2)
+- Images: JPEG, PNG, TIFF, HEIC/HEIF, GIF, BMP, WebP
+- RAW: CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RW2, RAF, PEF, SRW, X3F, 3FR, IIQ, ERF, KDC, MRW, RWL
+- Video: MOV, MP4, M4V, AVI, MTS, M2TS, 3GP (dates, GPS and Live Photo pairing from QuickTime metadata)
+
+Capture dates come from EXIF, then QuickTime metadata, then a date in the file name (`IMG_20190312_101502.jpg`,
+`Scan_19980704.tif`), and only then the file's modification date, which is flagged as unreliable.
 
 ## Requirements
 
-- macOS 14.0 or later
-- Xcode 15.0 or later
-- Swift 5.9 or later
+- macOS 15.0 or later
+- Xcode 16 or later
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 
 ## Building the Application
 
-### Using Xcode (Recommended)
-1. Open the `PhotoManager.xcodeproj` file in Xcode
-2. Wait for Swift Package Manager to resolve dependencies (SQLite.swift)
-3. Select the PhotoManager target and your desired scheme
-4. Build and run the application using Cmd+R
+The Xcode project is generated from `project.yml`, so every source file under `PhotoManager/` is included
+automatically:
 
-### Project Structure
-The project is organized as a standard Xcode macOS application:
-- `PhotoManager/` - Main source code directory
-- `PhotoManager.xcodeproj/` - Xcode project file
-- `Package.swift` - Swift Package Manager configuration (for dependencies)
-- `README.md` - This file
+```sh
+xcodegen generate
+open PhotoManager.xcodeproj        # or: xcodebuild -scheme PhotoManager build
+```
+
+### Tests
+
+```sh
+xcodebuild -scheme PhotoManager test
+```
+
+Tests use throwaway databases; the app's own catalogue is never opened under XCTest.
+
+To benchmark against a large, realistically messy library (trips, RAW+JPEG pairs, card dumps copied several times,
+resized exports, scans), generate one inside the app's sandbox container and run the benchmark test:
+
+```sh
+LIB=~/Library/Containers/com.example.PhotoManager/Data/tmp/pm-bench
+python3 tools/make_synthetic_library.py $LIB --shots 20000
+TEST_RUNNER_PM_BENCH_LIBRARY=$LIB xcodebuild -scheme PhotoManager test -only-testing:PhotoManagerTests/BenchmarkTests
+```
+
+On an M-series Mac, 47,000 files (20,000 shots) scan in about 6 s, a rescan with no changes takes 0.5 s, and grid
+pages, timelines and pivots return in milliseconds. The benchmark checks shots, duplicates, near-copies and trips
+against the generator's ground truth.
 
 ## Usage
 
@@ -147,19 +197,15 @@ Sources/PhotoManager/
 
 ## Database Schema
 
-The application uses SQLite with the following main tables:
+SQLite (WAL mode, foreign keys on), schema version 2, migrated automatically:
 
-### root_directories
-- Stores managed photo directory paths
-- Tracks last scan times
-- Manages active/inactive states
-
-### photo_files
-- Complete photo metadata for each file
-- EXIF data fields (camera, lens, exposure settings)
-- File hash for duplicate detection
-- Thumbnail management flags
-- Foreign key relationship to root directories
+- `root_directories`: managed folders with security-scoped bookmarks
+- `photo_files`: one row per file with path parts, content hash, best capture date and its source, EXIF, GPS,
+  media kind, Live Photo content id, thumbnail, rating, colour, description and event; unique per root + path
+- `events`: the nested event tree (trip ▸ place ▸ subject)
+- `tags`, `photo_tags`: people and keywords
+- `geo_cells`: cached place names for GPS areas
+- `org_plans`, `org_plan_items`: organise plans, which double as the copy journal
 
 ## Architecture Notes
 
@@ -172,10 +218,11 @@ The application uses SQLite with the following main tables:
 
 ## Performance Considerations
 
-- **Lazy Loading**: Photos are loaded in batches of 50 for smooth scrolling
-- **Background Processing**: File scanning and thumbnail generation happen off the main thread
-- **Database Indexing**: Optimized queries with proper indices on frequently searched fields
-- **Thumbnail Caching**: Generated thumbnails are cached to disk for fast subsequent access
+- Views page and aggregate in SQL (`PhotoFilter` → `WHERE`, `pivot`) instead of loading the whole library
+- Scans are incremental (size + modification date), hash in parallel with streaming SHA-256 and write in batches
+- Thumbnails are content-addressed (shared by copies), generated in parallel from embedded previews where possible,
+  and loaded asynchronously through a memory-bounded cache
+- Duplicate analysis runs off the main thread in a few queries
 
 ## Troubleshooting
 
@@ -201,14 +248,12 @@ The application uses SQLite with the following main tables:
 ## Future Enhancements
 
 Potential improvements for future versions:
-- Tags and keyword management
-- Advanced search and filtering
+- Face clustering (on-device Vision) for people tags
+- Move-in-place mode with an undo journal (currently copy-to-new-folder only)
 - Photo editing integration
 - Export and sharing features
 - Cloud storage integration
-- Batch operations for duplicates
 - Custom thumbnail sizes
-- Database backup and restore
 
 ## License
 

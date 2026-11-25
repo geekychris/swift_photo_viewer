@@ -5,18 +5,17 @@ struct DirectoryComparisonView: View {
     @Binding var sidebarWidth: CGFloat
     @Binding var selectedPhoto: PhotoFile?
     @State private var selectedComparison: DirectoryPair?
-    @State private var selectedFilesForDeletion: Set<Int64> = []
-    @State private var showingDeleteConfirmation = false
     @State private var isLoading = false
     @State private var loadedPairs: [DirectoryPair] = []
-    @State private var needsRefresh = false
+    /// Bumped when the duplicate groups or roots change; the pair list is recomputed only then.
+    @State private var sourceVersion = 0
     
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    if isLoading {
+                    if isLoading || photoLibrary.isLoadingDuplicates {
                         Text("Analyzing directories...")
                             .font(.headline)
                     } else {
@@ -31,7 +30,7 @@ struct DirectoryComparisonView: View {
                 
                 Spacer()
                 
-                if isLoading {
+                if isLoading || photoLibrary.isLoadingDuplicates {
                     ProgressView()
                         .scaleEffect(0.8)
                 }
@@ -43,7 +42,7 @@ struct DirectoryComparisonView: View {
             
             if selectedComparison == nil {
                 // List of directory pairs
-                if isLoading {
+                if isLoading && loadedPairs.isEmpty {
                     VStack(spacing: 16) {
                         ProgressView()
                         Text("Finding directory pairs...")
@@ -87,198 +86,71 @@ struct DirectoryComparisonView: View {
             }
         }
         .navigationTitle("Directory Comparison")
-        .onAppear {
-            // Load if empty, or refresh if marked as stale
-            if loadedPairs.isEmpty && !isLoading {
-                loadDirectoryPairs()
-            } else if needsRefresh && !isLoading {
-                print("🔄 Refreshing directory pairs list after changes")
-                needsRefresh = false
-                loadDirectoryPairs()
-            }
-        }
-        .onChange(of: photoLibrary.duplicateGroups.count) { oldCount, newCount in
-            // Duplicate groups changed (e.g., files deleted)
-            print("⏳ Duplicate groups changed from \(oldCount) to \(newCount)")
-            needsRefresh = true
-            
-            // Always auto-refresh after deletions (we use independent windows now)
-            if !isLoading {
-                print("🔄 Auto-refreshing directory pairs list after 1 second delay")
-                Task {
-                    // Small delay to allow batch deletions to complete
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    
-                    await MainActor.run {
-                        if needsRefresh && !isLoading {
-                            print("✅ Executing refresh now...")
-                            needsRefresh = false
-                            loadDirectoryPairs()
-                        }
-                    }
-                }
-            }
-        }
+        .task(id: sourceVersion) { await loadDirectoryPairs() }
+        .onReceive(photoLibrary.$duplicateGroups.dropFirst()) { _ in sourceVersion += 1 }
+        .onReceive(photoLibrary.$rootDirectories.dropFirst()) { _ in sourceVersion += 1 }
     }
     
-    private func loadDirectoryPairs() {
+    private func loadDirectoryPairs() async {
         isLoading = true
-        print("🔄 Starting directory pairs calculation...")
-        
-        Task {
-            // Add timeout protection
-            let pairs = await withTimeout(seconds: 30) {
-                await calculateDirectoryPairs()
+        let groups = photoLibrary.duplicateGroups
+        let rootPaths = Self.rootPathMap(photoLibrary.rootDirectories)
+        let work = Task.detached(priority: .userInitiated) {
+            Self.calculateDirectoryPairs(groups: groups, rootPaths: rootPaths)
+        }
+        let pairs = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        guard !Task.isCancelled, let pairs else { return }  // a newer load replaces this one
+        loadedPairs = pairs
+        isLoading = false
+    }
+
+    nonisolated static func rootPathMap(_ roots: [RootDirectory]) -> [Int64: String] {
+        Dictionary(roots.compactMap { r in r.id.map { ($0, r.path) } }, uniquingKeysWith: { a, _ in a })
+    }
+
+    nonisolated static func absoluteDirectory(of file: PhotoFile, rootPaths: [Int64: String]) -> String? {
+        guard let root = rootPaths[file.rootDirectoryId] else { return nil }
+        return (root as NSString).appendingPathComponent(file.directoryPath)
+    }
+
+    /// Counts directory pairs from an inverted index (content hash → directories holding it), so the
+    /// cost is proportional to the duplicate files, not to the square of the number of directories.
+    /// Returns nil if cancelled.
+    nonisolated static func calculateDirectoryPairs(groups: [DuplicateGroup], rootPaths: [Int64: String]) -> [DirectoryPair]? {
+        struct PairKey: Hashable { let a: String; let b: String }
+        var pairStats: [PairKey: (count: Int, wasted: Int64)] = [:]
+
+        for (index, group) in groups.enumerated() where group.files.count > 1 {
+            if index % 256 == 0 && Task.isCancelled { return nil }
+            var perDirectory: [String: Int] = [:]
+            for file in group.files {
+                if let dir = absoluteDirectory(of: file, rootPaths: rootPaths) {
+                    perDirectory[dir, default: 0] += 1
+                }
             }
-            
-            await MainActor.run {
-                loadedPairs = pairs ?? []
-                isLoading = false
-                if pairs == nil {
-                    print("⏰ Directory pairs calculation timed out after 30 seconds")
-                } else {
-                    print("✅ Directory pairs calculation completed")
+            guard perDirectory.count > 1 else { continue }
+            let dirs = perDirectory.keys.sorted()
+            let fileSize = group.files.first?.fileSize ?? 0
+            for i in 0..<dirs.count {
+                for j in (i + 1)..<dirs.count {
+                    let total = perDirectory[dirs[i]]! + perDirectory[dirs[j]]!
+                    let key = PairKey(a: dirs[i], b: dirs[j])
+                    var stats = pairStats[key] ?? (0, 0)
+                    stats.count += total
+                    stats.wasted += fileSize * Int64(total - 1)
+                    pairStats[key] = stats
                 }
             }
         }
-    }
-    
-    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async -> T) async -> T? {
-        try? await withThrowingTaskGroup(of: T?.self) { group in
-            // Add the actual operation
-            group.addTask {
-                await operation()
-            }
-            
-            // Add a timeout task
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
-            }
-            
-            // Return first result
-            if let result = try await group.next() {
-                group.cancelAll()
-                return result
-            }
-            return nil
-        }
-    }
-    
-    private func calculateDirectoryPairs() async -> [DirectoryPair] {
-        return await Task.detached {
-            // Build a map of directory -> [hash -> count]
-            var dirHashCounts: [String: [String: Int]] = [:]
-            
-            // Capture data on main actor
-            let duplicateGroups = await MainActor.run { photoLibrary.duplicateGroups }
-            let rootDirectories = await MainActor.run { photoLibrary.rootDirectories }
-            
-            print("📋 Captured \(rootDirectories.count) root directories")
-            for root in rootDirectories {
-                print("   Root ID \(root.id): \(root.path)")
-            }
-            
-            // Safety check: limit processing to prevent memory overflow
-            let maxGroupsToProcess = min(duplicateGroups.count, 10000)
-            if duplicateGroups.count > maxGroupsToProcess {
-                print("⚠️ WARNING: Too many duplicate groups (\(duplicateGroups.count)). Processing only first \(maxGroupsToProcess)")
-            }
-            
-            // First pass: count files per hash per directory
-            var uniqueRootIds: Set<Int64> = []
-            var skippedFiles = 0
-            var processedGroups = 0
-            let groupsToProcess = Array(duplicateGroups.prefix(maxGroupsToProcess))
-            
-            for group in groupsToProcess where group.files.count > 1 {
-                let hash = group.fileHash
-                for file in group.files {
-                    uniqueRootIds.insert(file.rootDirectoryId)
-                    // ONLY use absolute paths
-                    if let dirPath = file.getAbsoluteDirectoryPath(rootDirectories: rootDirectories) {
-                        dirHashCounts[dirPath, default: [:]][hash, default: 0] += 1
-                    } else {
-                        skippedFiles += 1
-                    }
-                }
-                processedGroups += 1
-                if processedGroups % 100 == 0 {
-                    print("⏳ Processed \(processedGroups)/\(groupsToProcess.count) duplicate groups")
-                }
-            }
-            
-            print("🔑 Unique root IDs found in files: \(uniqueRootIds.sorted())")
-            if skippedFiles > 0 {
-                print("⚠️ Skipped \(skippedFiles) files due to missing root directories")
-            }
-            
-            // Second pass: find directory pairs that share hashes
-            var pairCounts: [Set<String>: (count: Int, wasted: Int64)] = [:]
-            let directories = Array(dirHashCounts.keys)
-            
-            for i in 0..<directories.count {
-                for j in (i+1)..<directories.count {
-                    let dir1 = directories[i]
-                    let dir2 = directories[j]
-                    
-                    guard let hashes1 = dirHashCounts[dir1],
-                          let hashes2 = dirHashCounts[dir2] else { continue }
-                    
-                    // Find common hashes
-                    let commonHashes = Set(hashes1.keys).intersection(Set(hashes2.keys))
-                    
-                    if !commonHashes.isEmpty {
-                        var totalCount = 0
-                        var totalWasted: Int64 = 0
-                        
-                        for hash in commonHashes {
-                            let count1 = hashes1[hash] ?? 0
-                            let count2 = hashes2[hash] ?? 0
-                            totalCount += count1 + count2
-                            
-                            // Find file size for this hash
-                            if let group = duplicateGroups.first(where: { $0.fileHash == hash }),
-                               let fileSize = group.files.first?.fileSize {
-                                totalWasted += fileSize * Int64(count1 + count2 - 1)
-                            }
-                        }
-                        
-                        let pairKey = Set([dir1, dir2])
-                        pairCounts[pairKey] = (totalCount, totalWasted)
-                    }
-                }
-            }
-            
-            // Convert to DirectoryPair array
-            let pairs = pairCounts.map { (dirs, stats) in
-                let dirsArray = Array(dirs).sorted()
-                let pair = DirectoryPair(
-                    directory1: dirsArray[0],
-                    directory2: dirsArray[1],
-                    sharedDuplicateCount: stats.count,
-                    wastedSpace: stats.wasted
-                )
-                print("✅ Created pair: \(dirsArray[0].split(separator: "/").suffix(2).joined(separator: "/")) <-> \(dirsArray[1].split(separator: "/").suffix(2).joined(separator: "/"))")
-                print("   Full Dir1: \(dirsArray[0])")
-                print("   Full Dir2: \(dirsArray[1])")
-                return pair
-            }.sorted { $0.sharedDuplicateCount > $1.sharedDuplicateCount }
-            
-            print("🎯 Total directory pairs found: \(pairs.count)")
-            return pairs
-        }.value
-    }
-    
-    private func getDirectoryPath(for photo: PhotoFile) -> String? {
-        return photo.getAbsoluteDirectoryPath(rootDirectories: photoLibrary.rootDirectories)
+        if Task.isCancelled { return nil }
+
+        return pairStats.map { key, stats in
+            DirectoryPair(directory1: key.a, directory2: key.b,
+                          sharedDuplicateCount: stats.count, wastedSpace: stats.wasted)
+        }.sorted { $0.sharedDuplicateCount > $1.sharedDuplicateCount }
     }
     
     private func openComparisonWindow(for pair: DirectoryPair) {
-        print("👀 Opening comparison window for:")
-        print("   Dir1: \(pair.directory1)")
-        print("   Dir2: \(pair.directory2)")
-        
         // Create new window - each window is independent
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -289,6 +161,7 @@ struct DirectoryComparisonView: View {
         
         window.title = "Compare: \(pair.directory1.split(separator: "/").last ?? "") vs \(pair.directory2.split(separator: "/").last ?? "")"
         window.center()
+        window.isReleasedWhenClosed = false  // the window controller owns it
         
         // Create a window controller to keep the window alive
         let windowController = NSWindowController(window: window)
@@ -299,7 +172,6 @@ struct DirectoryComparisonView: View {
             selectedPhoto: $selectedPhoto,
             windowController: windowController,
             onBack: { [weak window] in
-                print("⬅️ Closing comparison window")
                 window?.close()
             }
         )
@@ -308,7 +180,6 @@ struct DirectoryComparisonView: View {
         window.contentView = NSHostingView(rootView: comparisonView)
         windowController.showWindow(nil)
         
-        print("✅ Comparison window created and shown")
     }
 }
 
@@ -363,7 +234,7 @@ struct DirectoryPairRow: View {
                 Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(ByteCountFormatter().string(fromByteCount: pair.wastedSpace))
+                    Text(DuplicateFormat.size(pair.wastedSpace))
                         .font(.caption)
                         .foregroundColor(.orange)
                     
@@ -387,20 +258,79 @@ struct DirectoryComparisonDetailView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var selectedForDeletion: Set<Int64> = []
     @State private var showingDeleteConfirmation = false
+    @State private var pendingDeletion: [PhotoFile] = []
+    @State private var pendingSideName = ""
+    @State private var trashResultMessage: String?
+    @State private var showingPairHint = false
     @State private var duplicatedFiles: [(file1: PhotoFile, file2: PhotoFile)] = []
+    /// For each file id, the ids it is paired with on the other side.
+    @State private var partners: [Int64: Set<Int64>] = [:]
     @State private var isLoadingFiles = true
     @State private var loadError: String?
-    @State private var loadTask: Task<Void, Never>? = nil
-    
-    private var selectedFiles: [PhotoFile] {
-        photoLibrary.duplicateGroups
-            .flatMap { $0.files }
-            .filter { file in
-                if let id = file.id {
-                    return selectedForDeletion.contains(id)
-                }
-                return false
-            }
+    @State private var loadVersion = 0
+
+    private func isSelected(_ file: PhotoFile) -> Bool {
+        file.id.map { selectedForDeletion.contains($0) } ?? false
+    }
+
+    /// A file may be selected only if none of its pair partners is: one copy of each pair is always kept.
+    private func canSelect(_ file: PhotoFile) -> Bool {
+        guard let id = file.id else { return false }
+        return partners[id, default: []].isDisjoint(with: selectedForDeletion)
+    }
+
+    private func toggle(_ file: PhotoFile) {
+        guard let id = file.id else { return }
+        if selectedForDeletion.contains(id) {
+            selectedForDeletion.remove(id)
+        } else if canSelect(file) {
+            selectedForDeletion.insert(id)
+        } else {
+            flashPairHint()
+        }
+    }
+
+    private func selectAll(side1: Bool) {
+        var skipped = false
+        for filePair in duplicatedFiles {
+            let file = side1 ? filePair.file1 : filePair.file2
+            guard let id = file.id, !selectedForDeletion.contains(id) else { continue }
+            if canSelect(file) { selectedForDeletion.insert(id) } else { skipped = true }
+        }
+        if skipped { flashPairHint() }
+    }
+
+    /// Unique selected files on one side.
+    private func selectedFiles(side1: Bool) -> [PhotoFile] {
+        var seen: Set<Int64> = []
+        return duplicatedFiles.compactMap { filePair in
+            let file = side1 ? filePair.file1 : filePair.file2
+            guard let id = file.id, selectedForDeletion.contains(id), seen.insert(id).inserted else { return nil }
+            return file
+        }
+    }
+
+    private func flashPairHint() {
+        showingPairHint = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { showingPairHint = false }
+    }
+
+    private func confirmDelete(side1: Bool) {
+        pendingDeletion = selectedFiles(side1: side1)
+        pendingSideName = side1 ? "Directory 1" : "Directory 2"
+        showingDeleteConfirmation = !pendingDeletion.isEmpty
+    }
+
+    private func deletePending() {
+        let files = pendingDeletion
+        pendingDeletion = []
+        guard !files.isEmpty else { return }
+        let result = photoLibrary.trashPhotos(files)  // guarded, refreshes the duplicate lists itself
+        let removed = Set(result.trashed.compactMap(\.id))
+        selectedForDeletion.subtract(files.compactMap(\.id))
+        // Drop pairs that lost a file right away; the full reload follows when the duplicate lists refresh.
+        duplicatedFiles.removeAll { removed.contains($0.file1.id ?? -1) || removed.contains($0.file2.id ?? -1) }
+        trashResultMessage = result.summary + "."
     }
     
     var body: some View {
@@ -418,6 +348,12 @@ struct DirectoryComparisonDetailView: View {
                 .buttonStyle(.borderless)
                 
                 Spacer()
+
+                if showingPairHint {
+                    Label("One file of each pair is always kept", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
                 
                 // Global selection controls
                 if !selectedForDeletion.isEmpty {
@@ -441,139 +377,13 @@ struct DirectoryComparisonDetailView: View {
             
             // Directory headers - side by side with minimal spacing
             HStack(spacing: 0) {
-                // Left directory (Directory 1)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Directory 1")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(pair.directory1)
-                        .font(.caption)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                    
-                    HStack(spacing: 8) {
-                        Button {
-                            openDirectoryInFinder(pair.directory1)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "folder")
-                                Text("Open in Finder")
-                            }
-                            .font(.caption2)
-                        }
-                        .buttonStyle(.link)
-                        
-                        if !isLoadingFiles && !duplicatedFiles.isEmpty {
-                            Button {
-                                // Select all files from Directory 1
-                                var dir1Ids: Set<Int64> = []
-                                for filePair in duplicatedFiles {
-                                    if let id1 = filePair.file1.id {
-                                        dir1Ids.insert(id1)
-                                    }
-                                }
-                                selectedForDeletion.formUnion(dir1Ids)
-                            } label: {
-                                HStack(spacing: 2) {
-                                    Image(systemName: "checkmark.circle")
-                                    Text("Select All")
-                                }
-                                .font(.caption2)
-                            }
-                            .buttonStyle(.bordered)
-                            
-                            let dir1SelectedCount = duplicatedFiles.filter { 
-                                if let id = $0.file1.id { return selectedForDeletion.contains(id) }
-                                return false
-                            }.count
-                            
-                            if dir1SelectedCount > 0 {
-                                Button {
-                                    showingDeleteConfirmation = true
-                                } label: {
-                                    HStack(spacing: 2) {
-                                        Image(systemName: "trash")
-                                        Text("Delete (\(dir1SelectedCount))")
-                                    }
-                                    .font(.caption2)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.red)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(Color.blue.opacity(0.1))
+                directoryHeader(title: "Directory 1", path: pair.directory1, side1: true)
+                    .background(Color.blue.opacity(0.1))
                 
                 Divider()
                 
-                // Right directory (Directory 2)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Directory 2")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(pair.directory2)
-                        .font(.caption)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                    
-                    HStack(spacing: 8) {
-                        Button {
-                            openDirectoryInFinder(pair.directory2)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "folder")
-                                Text("Open in Finder")
-                            }
-                            .font(.caption2)
-                        }
-                        .buttonStyle(.link)
-                        
-                        if !isLoadingFiles && !duplicatedFiles.isEmpty {
-                            Button {
-                                // Select all files from Directory 2
-                                var dir2Ids: Set<Int64> = []
-                                for filePair in duplicatedFiles {
-                                    if let id2 = filePair.file2.id {
-                                        dir2Ids.insert(id2)
-                                    }
-                                }
-                                selectedForDeletion.formUnion(dir2Ids)
-                            } label: {
-                                HStack(spacing: 2) {
-                                    Image(systemName: "checkmark.circle")
-                                    Text("Select All")
-                                }
-                                .font(.caption2)
-                            }
-                            .buttonStyle(.bordered)
-                            
-                            let dir2SelectedCount = duplicatedFiles.filter { 
-                                if let id = $0.file2.id { return selectedForDeletion.contains(id) }
-                                return false
-                            }.count
-                            
-                            if dir2SelectedCount > 0 {
-                                Button {
-                                    showingDeleteConfirmation = true
-                                } label: {
-                                    HStack(spacing: 2) {
-                                        Image(systemName: "trash")
-                                        Text("Delete (\(dir2SelectedCount))")
-                                    }
-                                    .font(.caption2)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.red)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(Color.orange.opacity(0.1))
+                directoryHeader(title: "Directory 2", path: pair.directory2, side1: false)
+                    .background(Color.orange.opacity(0.1))
             }
             .fixedSize(horizontal: false, vertical: true)
             
@@ -596,12 +406,13 @@ struct DirectoryComparisonDetailView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 1) {
-                        ForEach(Array(duplicatedFiles.enumerated()), id: \.offset) { index, pair in
+                        ForEach(Array(duplicatedFiles.enumerated()), id: \.offset) { index, filePair in
                             SideBySideFileRow(
-                                file1: pair.file1,
-                                file2: pair.file2,
+                                file1: filePair.file1,
+                                file2: filePair.file2,
                                 selectedForDeletion: $selectedForDeletion,
-                                selectedPhoto: $selectedPhoto
+                                selectedPhoto: $selectedPhoto,
+                                onToggle: { toggle($0) }
                             )
                             .environmentObject(photoLibrary)
                             
@@ -614,181 +425,129 @@ struct DirectoryComparisonDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .alert("Delete \(selectedFiles.count) Files", isPresented: $showingDeleteConfirmation) {
-            Button("Move to Trash", role: .destructive) {
-                let filesToDelete = selectedFiles  // Capture the files
-                let deletedIds = Set(filesToDelete.compactMap { $0.id })
-                print("🗑️ Starting deletion of \(filesToDelete.count) files")
-                selectedForDeletion.removeAll()
+        .alert("Delete \(pendingDeletion.count) Files from \(pendingSideName)", isPresented: $showingDeleteConfirmation) {
+            Button("Move to Trash", role: .destructive) { deletePending() }
+            Button("Cancel", role: .cancel) { pendingDeletion = [] }
+        } message: {
+            let totalSize = pendingDeletion.reduce(0) { $0 + $1.fileSize }
+            Text("Move \(pendingDeletion.count) files (\(DuplicateFormat.size(totalSize))) from \(pendingSideName) to the Trash?\n\nOne copy of every photo is always kept. You can restore files from the Trash if needed.")
+        }
+        .alert("Directory Comparison", isPresented: Binding(get: { trashResultMessage != nil }, set: { if !$0 { trashResultMessage = nil } })) {
+            Button("OK", role: .cancel) { trashResultMessage = nil }
+        } message: {
+            Text(trashResultMessage ?? "")
+        }
+        .task(id: loadVersion) { await loadDuplicatedFiles() }
+        .onReceive(photoLibrary.$duplicateGroups.dropFirst()) { _ in loadVersion += 1 }
+    }
+
+    @ViewBuilder
+    private func directoryHeader(title: String, path: String, side1: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(path)
+                .font(.caption)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            
+            HStack(spacing: 8) {
+                Button {
+                    openDirectoryInFinder(path)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                        Text("Open in Finder")
+                    }
+                    .font(.caption2)
+                }
+                .buttonStyle(.link)
                 
-                // Delete files asynchronously to avoid blocking UI
-                Task {
-                    // Delete all files
-                    for file in filesToDelete {
-                        photoLibrary.movePhotoToTrash(file)
-                    }
-                    
-                    // Refresh duplicates ONCE after all deletions
-                    print("🔄 Refreshing duplicate groups after batch deletion")
-                    await MainActor.run {
-                        photoLibrary.loadDuplicates()
-                    }
-                    
-                    // Filter out deleted files from current list - much faster than full rescan
-                    print("🔄 Filtering deleted files from list")
-                    await MainActor.run {
-                        // Remove pairs where either file was deleted
-                        duplicatedFiles = duplicatedFiles.filter { pair in
-                            let file1NotDeleted = !deletedIds.contains(pair.file1.id ?? -1)
-                            let file2NotDeleted = !deletedIds.contains(pair.file2.id ?? -1)
-                            return file1NotDeleted && file2NotDeleted
+                if !isLoadingFiles && !duplicatedFiles.isEmpty {
+                    Button {
+                        selectAll(side1: side1)
+                    } label: {
+                        HStack(spacing: 2) {
+                            Image(systemName: "checkmark.circle")
+                            Text("Select All")
                         }
-                        print("✅ Updated file list, now showing \(duplicatedFiles.count) pairs")
+                        .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Selects every file on this side whose partner on the other side is not selected")
+                    
+                    let selectedCount = selectedFiles(side1: side1).count
+                    if selectedCount > 0 {
+                        Button {
+                            confirmDelete(side1: side1)
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "trash")
+                                Text("Delete (\(selectedCount))")
+                            }
+                            .font(.caption2)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
                     }
                 }
             }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            let totalSize = selectedFiles.reduce(0) { $0 + $1.fileSize }
-            Text("Move \(selectedFiles.count) files (\(ByteCountFormatter().string(fromByteCount: totalSize))) to the Trash?\n\nYou can restore them from Trash if needed.")
         }
-        .onAppear {
-            print("🔵 DirectoryComparisonDetailView appeared")
-            print("   Directory 1: \(pair.directory1)")
-            print("   Directory 2: \(pair.directory2)")
-            
-            // Cancel any existing task first
-            loadTask?.cancel()
-            
-            // Load files asynchronously ONCE
-            loadTask = Task {
-                await loadDuplicatedFiles()
-            }
-        }
-        .onDisappear {
-            // Capture task reference and cancel asynchronously to avoid accessing
-            // potentially deallocated state
-            let taskToCancel = loadTask
-            print("🔴 DirectoryComparisonDetailView disappearing - cancelling load task")
-            
-            // Cancel on next run loop to ensure we're not in the middle of state updates
-            DispatchQueue.main.async {
-                taskToCancel?.cancel()
-            }
-        }
-    }
-    
-    private func getDirectoryPath(for photo: PhotoFile) -> String? {
-        return photo.getAbsoluteDirectoryPath(rootDirectories: photoLibrary.rootDirectories)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
     }
     
     private func openDirectoryInFinder(_ directoryPath: String) {
-        print("📂 Opening directory in Finder: \(directoryPath)")
-        
         // Find which root directory contains this path
         guard let rootDir = photoLibrary.rootDirectories.first(where: { directoryPath.hasPrefix($0.path) }) else {
-            print("❌ No root directory found for path: \(directoryPath)")
             return
         }
-        
-        // Start accessing security-scoped resource if bookmark data exists
-        var securityScopedURL: URL?
-        if let bookmarkData = rootDir.bookmarkData {
-            do {
-                var isStale = false
-                securityScopedURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
-                
-                if let url = securityScopedURL {
-                    let didStartAccessing = url.startAccessingSecurityScopedResource()
-                    print("🔓 Started security-scoped access: \(didStartAccessing)")
-                }
-            } catch {
-                print("⚠️ Failed to resolve bookmark: \(error.localizedDescription)")
+        SecurityScope.withAccess(rootDir) {
+            if FileManager.default.fileExists(atPath: directoryPath) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: directoryPath))
             }
-        }
-        
-        // Ensure we stop accessing the resource when done
-        defer {
-            if let url = securityScopedURL {
-                url.stopAccessingSecurityScopedResource()
-                print("🔒 Stopped security-scoped access")
-            }
-        }
-        
-        // Open the directory
-        if FileManager.default.fileExists(atPath: directoryPath) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: directoryPath))
-            print("✅ Opened directory in Finder")
-        } else {
-            print("❌ Directory does not exist: \(directoryPath)")
         }
     }
     
+    /// Finds the file pairs shared by the two directories off the main thread.
     private func loadDuplicatedFiles() async {
-        let startTime = Date()
-        print("⏱️ Starting to load duplicated files between:")
-        print("   Directory 1: \(pair.directory1)")
-        print("   Directory 2: \(pair.directory2)")
-        print("   Total duplicate groups to scan: \(photoLibrary.duplicateGroups.count)")
-        
-        var pairs: [(PhotoFile, PhotoFile)] = []
-        var processedGroups = 0
-        
-        // Process groups in background
-        for group in photoLibrary.duplicateGroups where group.files.count > 1 {
-            // Check if task was cancelled
-            if Task.isCancelled {
-                print("⚠️ Load task cancelled after processing \(processedGroups) groups")
-                return
-            }
-            
-            processedGroups += 1
-            
-            // Progress logging every 500 groups
-            if processedGroups % 500 == 0 {
-                print("📄 Processed \(processedGroups)/\(photoLibrary.duplicateGroups.count) groups, found \(pairs.count) file pairs so far...")
-            }
-            
-            // ONLY include files with valid absolute paths
-            let filesInDir1 = group.files.filter { 
-                guard let dirPath = getDirectoryPath(for: $0) else { return false }
-                return dirPath == pair.directory1
-            }
-            let filesInDir2 = group.files.filter { 
-                guard let dirPath = getDirectoryPath(for: $0) else { return false }
-                return dirPath == pair.directory2
-            }
-            
-            // All files in filesInDir1 are duplicates of all files in filesInDir2 (same hash)
-            for file1 in filesInDir1 {
-                for file2 in filesInDir2 {
-                    pairs.append((file1, file2))
+        let groups = photoLibrary.duplicateGroups
+        let rootPaths = DirectoryComparisonView.rootPathMap(photoLibrary.rootDirectories)
+        let dir1 = pair.directory1
+        let dir2 = pair.directory2
+        let work = Task.detached(priority: .userInitiated) { () -> [(file1: PhotoFile, file2: PhotoFile)]? in
+            var pairs: [(file1: PhotoFile, file2: PhotoFile)] = []
+            for (index, group) in groups.enumerated() where group.files.count > 1 {
+                if index % 256 == 0 && Task.isCancelled { return nil }
+                var filesInDir1: [PhotoFile] = []
+                var filesInDir2: [PhotoFile] = []
+                for file in group.files {
+                    let dir = DirectoryComparisonView.absoluteDirectory(of: file, rootPaths: rootPaths)
+                    if dir == dir1 { filesInDir1.append(file) } else if dir == dir2 { filesInDir2.append(file) }
+                }
+                // All files in filesInDir1 are duplicates of all files in filesInDir2 (same hash)
+                for file1 in filesInDir1 {
+                    for file2 in filesInDir2 {
+                        pairs.append((file1, file2))
+                    }
                 }
             }
+            return pairs.sorted { $0.file1.fileName < $1.file1.fileName }
         }
-        
-        // Check again before updating UI
-        if Task.isCancelled {
-            print("⚠️ Load task cancelled before updating UI")
-            return
+        let result = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        guard !Task.isCancelled, let result else { return }
+
+        var partnerMap: [Int64: Set<Int64>] = [:]
+        for filePair in result {
+            guard let a = filePair.file1.id, let b = filePair.file2.id else { continue }
+            partnerMap[a, default: []].insert(b)
+            partnerMap[b, default: []].insert(a)
         }
-        
-        let elapsed = Date().timeIntervalSince(startTime)
-        print("✅ Finished loading \(pairs.count) duplicated file pairs in \(String(format: "%.2f", elapsed))s")
-        
-        // Sort by filename on background thread
-        let sortedPairs = pairs.sorted(by: { $0.0.fileName < $1.0.fileName })
-        
-        // Update UI on main thread - only if not cancelled
-        if !Task.isCancelled {
-            await MainActor.run {
-                self.duplicatedFiles = sortedPairs
-                self.isLoadingFiles = false
-                print("   Duplicated files count: \(duplicatedFiles.count)")
-            }
-        } else {
-            print("⚠️ Load task cancelled, skipping UI update")
-        }
+        duplicatedFiles = result
+        partners = partnerMap
+        selectedForDeletion.formIntersection(partnerMap.keys)
+        isLoadingFiles = false
     }
 }
 
@@ -797,6 +556,8 @@ struct SideBySideFileRow: View {
     let file2: PhotoFile
     @Binding var selectedForDeletion: Set<Int64>
     @Binding var selectedPhoto: PhotoFile?
+    /// Toggles a file's selection; the parent refuses to select both files of a pair.
+    let onToggle: (PhotoFile) -> Void
     @EnvironmentObject var photoLibrary: PhotoLibrary
     
     // Verify hashes match
@@ -840,15 +601,7 @@ struct SideBySideFileRow: View {
                 isSelected: file1Selected,
                 selectedPhoto: $selectedPhoto,
                 backgroundColor: Color.blue.opacity(0.05),
-                onToggleSelection: {
-                    if let id = file1.id {
-                        if selectedForDeletion.contains(id) {
-                            selectedForDeletion.remove(id)
-                        } else {
-                            selectedForDeletion.insert(id)
-                        }
-                    }
-                }
+                onToggleSelection: { onToggle(file1) }
             )
             .environmentObject(photoLibrary)
             
@@ -860,15 +613,7 @@ struct SideBySideFileRow: View {
                 isSelected: file2Selected,
                 selectedPhoto: $selectedPhoto,
                 backgroundColor: Color.orange.opacity(0.05),
-                onToggleSelection: {
-                    if let id = file2.id {
-                        if selectedForDeletion.contains(id) {
-                            selectedForDeletion.remove(id)
-                        } else {
-                            selectedForDeletion.insert(id)
-                        }
-                    }
-                }
+                onToggleSelection: { onToggle(file2) }
             )
             .environmentObject(photoLibrary)
             }
@@ -920,7 +665,7 @@ struct FileCell: View {
                     .textSelection(.enabled)
                 
                 HStack(spacing: 8) {
-                    Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                    Text(DuplicateFormat.size(file.fileSize))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     

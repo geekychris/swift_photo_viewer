@@ -1,16 +1,10 @@
 import SwiftUI
 import Foundation
-//foo
+
 @main
 struct PhotoManagerApp: App {
     @StateObject private var databaseManager = DatabaseManager.shared
     @StateObject private var photoLibrary = PhotoLibrary()
-    
-    init() {
-        NSLog("🚀 PhotoManagerApp: Application starting up")
-        NSLog("🚀 PhotoManagerApp: databaseManager = %@", String(describing: databaseManager))
-        NSLog("🚀 PhotoManagerApp: photoLibrary = %@", String(describing: photoLibrary))
-    }
     
     var body: some Scene {
         WindowGroup {
@@ -30,6 +24,20 @@ struct PhotoManagerApp: App {
                 .environmentObject(databaseManager)
         }
         
+        Window("Organise Library", id: "organise") {
+            OrganizeWorkbenchView()
+                .environmentObject(photoLibrary)
+                .frame(minWidth: 1100, minHeight: 700)
+        }
+        .defaultSize(width: 1400, height: 900)
+        
+        Window("Library Insights", id: "insights") {
+            LibraryInsightsView()
+                .environmentObject(photoLibrary)
+                .frame(minWidth: 900, minHeight: 600)
+        }
+        .defaultSize(width: 1200, height: 800)
+        
         WindowGroup("Database Debug", id: "database-debug") {
             DatabaseDebugView()
                 .environmentObject(databaseManager)
@@ -43,6 +51,12 @@ struct DebugCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     
     var body: some Commands {
+        CommandMenu("Library") {
+            Button("Organise Library…") { openWindow(id: "organise") }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Button("Library Insights") { openWindow(id: "insights") }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+        }
         CommandGroup(after: .appInfo) {
             Button("Database Debug Window") {
                 openWindow(id: "database-debug")

@@ -1,72 +1,84 @@
 import SwiftUI
 
+/// Shared formatter for the duplicate screens (creating one per row is costly).
+enum DuplicateFormat {
+    static let bytes = ByteCountFormatter()
+    static func size(_ bytes: Int64) -> String { Self.bytes.string(fromByteCount: bytes) }
+}
+
 struct SimplifiedDuplicatesView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var sidebarWidth: CGFloat
     @Binding var selectedPhoto: PhotoFile?
     @State private var selectedFilesForDeletion: Set<Int64> = []
     @State private var showingDeleteConfirmation = false
+    @State private var pendingDeletion: [PhotoFile] = []
+    @State private var trashResultMessage: String?
     @State private var expandedGroups: Set<String> = []
     @State private var searchText = ""
-    @State private var refreshTrigger = 0  // Force view refresh
-    
-    private var duplicateGroups: [DuplicateGroup] {
-        let groups = photoLibrary.duplicateGroups
-            .filter { $0.files.count > 1 }
-            // Filter out groups where files have missing root directories
-            .compactMap { group -> DuplicateGroup? in
-                // Check if all files have valid root directories
-                let validFiles = group.files.filter { file in
-                    photoLibrary.rootDirectories.contains(where: { $0.id == file.rootDirectoryId })
-                }
-                
-                // Only include group if at least 2 files have valid roots (still duplicates)
-                if validFiles.count > 1 {
-                    let totalSize = validFiles.reduce(0) { $0 + $1.fileSize }
-                    return DuplicateGroup(fileHash: group.fileHash, files: validFiles, totalSize: totalSize)
-                } else {
-                    if group.files.count != validFiles.count {
-                        print("⚠️ Filtered out \(group.files.count - validFiles.count) files with missing root directories from hash \(String(group.fileHash.prefix(8)))")
-                    }
-                    return nil
-                }
-            }
-            .sorted { $0.files.count > $1.files.count }
-        
-        if searchText.isEmpty {
-            return groups
-        } else {
-            return groups.filter { group in
-                group.files.contains { file in
-                    file.fileName.localizedCaseInsensitiveContains(searchText) ||
-                    getFullPath(for: file).localizedCaseInsensitiveContains(searchText)
-                }
-            }
-        }
-    }
-    
-    private var totalDuplicateFiles: Int {
-        duplicateGroups.reduce(0) { $0 + ($1.files.count - 1) }
-    }
-    
-    private var totalWastedSpace: Int64 {
-        duplicateGroups.reduce(0) { total, group in
-            let fileSize = group.files.first?.fileSize ?? 0
-            return total + (fileSize * Int64(group.files.count - 1))
-        }
-    }
-    
+
+    // Cached, recomputed only when the duplicate groups, roots or (debounced) search text change.
+    @State private var duplicateGroups: [DuplicateGroup] = []
+    @State private var totalDuplicateFiles = 0
+    @State private var totalWastedSpace: Int64 = 0
+    @State private var sourceVersion = 0
+    @State private var appliedSearch = ""
+
     private var selectedFiles: [PhotoFile] {
-        photoLibrary.duplicateGroups
-            .flatMap { $0.files }
-            .filter { file in
-                if let id = file.id {
-                    return selectedFilesForDeletion.contains(id)
-                }
-                return false
-            }
+        duplicateGroups.flatMap { $0.files }.filter { file in
+            file.id.map { selectedFilesForDeletion.contains($0) } ?? false
+        }
     }
-    
+
+    /// Filters and sorts the groups off the main thread.
+    private func recompute() async {
+        if searchText != appliedSearch {
+            try? await Task.sleep(nanoseconds: 300_000_000)  // debounce typing
+            if Task.isCancelled { return }
+        }
+        let search = searchText
+        let source = photoLibrary.duplicateGroups
+        let rootPaths = Dictionary(photoLibrary.rootDirectories.compactMap { r in r.id.map { ($0, r.path) } },
+                                   uniquingKeysWith: { a, _ in a })
+        let groups = await Task.detached(priority: .userInitiated) { () -> [DuplicateGroup] in
+            var result: [DuplicateGroup] = []
+            for group in source where group.files.count > 1 {
+                if Task.isCancelled { return [] }
+                // Drop files whose library root is gone; keep the group only if it is still a duplicate.
+                let validFiles = group.files.filter { rootPaths[$0.rootDirectoryId] != nil }
+                guard validFiles.count > 1 else { continue }
+                if !search.isEmpty {
+                    let matches = validFiles.contains { file in
+                        file.fileName.localizedCaseInsensitiveContains(search) ||
+                        ((rootPaths[file.rootDirectoryId]! as NSString).appendingPathComponent(file.relativePath))
+                            .localizedCaseInsensitiveContains(search)
+                    }
+                    guard matches else { continue }
+                }
+                let totalSize = validFiles.reduce(0) { $0 + $1.fileSize }
+                result.append(DuplicateGroup(fileHash: group.fileHash, files: validFiles, totalSize: totalSize))
+            }
+            return result.sorted { $0.files.count > $1.files.count }
+        }.value
+        if Task.isCancelled { return }
+        duplicateGroups = groups
+        appliedSearch = search
+        totalDuplicateFiles = groups.reduce(0) { $0 + ($1.files.count - 1) }
+        totalWastedSpace = groups.reduce(0) { total, group in
+            total + (group.files.first?.fileSize ?? 0) * Int64(group.files.count - 1)
+        }
+        // Forget selections of files that are gone (e.g. trashed).
+        let visibleIds = Set(groups.flatMap { $0.files.compactMap(\.id) })
+        if search.isEmpty { selectedFilesForDeletion.formIntersection(visibleIds) }
+    }
+
+    private func trash(_ files: [PhotoFile]) {
+        guard !files.isEmpty else { return }
+        let result = photoLibrary.trashPhotos(files)  // one guarded call; it refreshes the duplicate lists
+        selectedFilesForDeletion.subtract(files.compactMap(\.id))
+        trashResultMessage = result.summary + "."
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header with stats
@@ -81,7 +93,7 @@ struct SimplifiedDuplicatesView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             
-                            Label(ByteCountFormatter().string(fromByteCount: totalWastedSpace) + " wasted", systemImage: "externaldrive.badge.exclamationmark")
+                            Label(DuplicateFormat.size(totalWastedSpace) + " wasted", systemImage: "externaldrive.badge.exclamationmark")
                                 .font(.caption)
                                 .foregroundColor(.orange)
                         }
@@ -104,7 +116,8 @@ struct SimplifiedDuplicatesView: View {
                             .buttonStyle(.bordered)
                             
                             Button {
-                                showingDeleteConfirmation = true
+                                pendingDeletion = selectedFiles
+                                showingDeleteConfirmation = !pendingDeletion.isEmpty
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "trash.fill")
@@ -171,6 +184,7 @@ struct SimplifiedDuplicatesView: View {
                                 isExpanded: expandedGroups.contains(group.fileHash),
                                 selectedFiles: $selectedFilesForDeletion,
                                 selectedPhoto: $selectedPhoto,
+                                onTrash: { file in trash([file]) },
                                 onToggle: {
                                     if expandedGroups.contains(group.fileHash) {
                                         expandedGroups.remove(group.fileHash)
@@ -186,41 +200,29 @@ struct SimplifiedDuplicatesView: View {
             }
         }
         .navigationTitle("All Duplicates")
-        .alert("Delete \(selectedFiles.count) Files", isPresented: $showingDeleteConfirmation) {
-            Button("Move to Trash", role: .destructive) {
-                let filesToDelete = selectedFiles  // Capture files
-                selectedFilesForDeletion.removeAll()
-                
-                // Delete files asynchronously to avoid blocking UI
-                Task {
-                    print("🗑️ Starting batch deletion of \(filesToDelete.count) files")
-                    for file in filesToDelete {
-                        photoLibrary.movePhotoToTrash(file)
-                    }
-                    
-                    // Refresh duplicates ONCE after all deletions
-                    print("🔄 Refreshing duplicate groups after batch deletion")
-                    await MainActor.run {
-                        photoLibrary.loadDuplicates()
-                        // Trigger UI refresh
-                        refreshTrigger += 1
-                    }
-                    print("✅ Deletion and refresh complete")
-                }
+        .overlay {
+            if photoLibrary.isLoadingDuplicates && duplicateGroups.isEmpty {
+                ProgressView("Finding duplicates…")
             }
-            Button("Cancel", role: .cancel) { }
+        }
+        .task(id: "\(sourceVersion)|\(searchText)") { await recompute() }
+        .onReceive(photoLibrary.$duplicateGroups.dropFirst()) { _ in sourceVersion += 1 }
+        .onReceive(photoLibrary.$rootDirectories.dropFirst()) { _ in sourceVersion += 1 }
+        .alert("Delete \(pendingDeletion.count) Files", isPresented: $showingDeleteConfirmation) {
+            Button("Move to Trash", role: .destructive) {
+                trash(pendingDeletion)
+                pendingDeletion = []
+            }
+            Button("Cancel", role: .cancel) { pendingDeletion = [] }
         } message: {
-            let totalSize = selectedFiles.reduce(0) { $0 + $1.fileSize }
-            Text("Move \(selectedFiles.count) files (\(ByteCountFormatter().string(fromByteCount: totalSize))) to the Trash?\n\nYou can restore them from Trash if needed.")
+            let totalSize = pendingDeletion.reduce(0) { $0 + $1.fileSize }
+            Text("Move \(pendingDeletion.count) files (\(DuplicateFormat.size(totalSize))) to the Trash?\n\nOne copy of every photo is always kept. You can restore files from the Trash if needed.")
         }
-    }
-    
-    private func getFullPath(for photo: PhotoFile) -> String {
-        if let absolutePath = photo.getAbsoluteFullPath(rootDirectories: photoLibrary.rootDirectories) {
-            return absolutePath
+        .alert("Duplicates", isPresented: Binding(get: { trashResultMessage != nil }, set: { if !$0 { trashResultMessage = nil } })) {
+            Button("OK", role: .cancel) { trashResultMessage = nil }
+        } message: {
+            Text(trashResultMessage ?? "")
         }
-        // Return empty string if path can't be determined
-        return ""
     }
 }
 
@@ -229,8 +231,10 @@ struct DuplicateGroupRow: View {
     let isExpanded: Bool
     @Binding var selectedFiles: Set<Int64>
     @Binding var selectedPhoto: PhotoFile?
+    let onTrash: (PhotoFile) -> Void
     let onToggle: () -> Void
     @EnvironmentObject var photoLibrary: PhotoLibrary
+    @State private var showingKeepHint = false
     
     private var fileSize: Int64 {
         group.files.first?.fileSize ?? 0
@@ -249,13 +253,18 @@ struct DuplicateGroupRow: View {
         Set(group.files.map { getDirectoryPath(for: $0) })
     }
     
+    private var selectedCount: Int {
+        group.files.filter { $0.id.map { selectedFiles.contains($0) } ?? false }.count
+    }
+
+    /// Every copy but one is selected; one copy of a group is always kept.
     private var allSelected: Bool {
-        group.files.allSatisfy { file in
-            if let id = file.id {
-                return selectedFiles.contains(id)
-            }
-            return false
-        }
+        group.files.count > 1 && selectedCount >= group.files.count - 1
+    }
+
+    private func flashKeepHint() {
+        showingKeepHint = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showingKeepHint = false }
     }
     
     var body: some View {
@@ -303,7 +312,7 @@ struct DuplicateGroupRow: View {
                         }
                         
                         HStack(spacing: 12) {
-                            Text(ByteCountFormatter().string(fromByteCount: fileSize) + " each")
+                            Text(DuplicateFormat.size(fileSize) + " each")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             
@@ -311,7 +320,7 @@ struct DuplicateGroupRow: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             
-                            Text(ByteCountFormatter().string(fromByteCount: wastedSpace) + " wasted")
+                            Text(DuplicateFormat.size(wastedSpace) + " wasted")
                                 .font(.caption)
                                 .foregroundColor(.orange)
                             
@@ -337,8 +346,9 @@ struct DuplicateGroupRow: View {
                                 }
                             }
                         } else {
-                            // Select all
-                            for file in group.files {
+                            // Select every copy but one: keep an already-unselected copy, else the first
+                            let keep = group.files.first { !($0.id.map { selectedFiles.contains($0) } ?? false) } ?? group.files[0]
+                            for file in group.files where file.id != keep.id {
                                 if let id = file.id {
                                     selectedFiles.insert(id)
                                 }
@@ -348,11 +358,12 @@ struct DuplicateGroupRow: View {
                         HStack(spacing: 4) {
                             Image(systemName: allSelected ? "checkmark.square.fill" : "square.dashed")
                                 .foregroundColor(allSelected ? .blue : .gray)
-                            Text("Select All")
+                            Text("Select All but One")
                                 .font(.caption2)
                         }
                     }
                     .buttonStyle(.plain)
+                    .help("Selects every copy except one; one copy is always kept")
                     .padding(.trailing, 8)
                 }
             }
@@ -364,20 +375,32 @@ struct DuplicateGroupRow: View {
             // Expanded file list
             if isExpanded {
                 VStack(spacing: 0) {
+                    if showingKeepHint {
+                        Label("One copy is always kept", systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .padding(.leading, 12)
+                            .padding(.bottom, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     ForEach(group.files) { file in
                         DuplicateFileRow(
                             file: file,
                             isSelected: selectedFiles.contains(file.id ?? 0),
+                            canTrash: group.files.count > 1,
                             selectedPhoto: $selectedPhoto,
                             onToggleSelection: {
                                 if let id = file.id {
                                     if selectedFiles.contains(id) {
                                         selectedFiles.remove(id)
+                                    } else if selectedCount >= group.files.count - 1 {
+                                        flashKeepHint()  // would select the last unselected copy
                                     } else {
                                         selectedFiles.insert(id)
                                     }
                                 }
-                            }
+                            },
+                            onTrash: { onTrash(file) }
                         )
                         .environmentObject(photoLibrary)
                         
@@ -402,8 +425,11 @@ struct DuplicateGroupRow: View {
 struct DuplicateFileRow: View {
     let file: PhotoFile
     let isSelected: Bool
+    /// False when this is the only remaining copy.
+    let canTrash: Bool
     @Binding var selectedPhoto: PhotoFile?
     let onToggleSelection: () -> Void
+    let onTrash: () -> Void
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingDeleteAlert = false
     
@@ -455,7 +481,7 @@ struct DuplicateFileRow: View {
                             .foregroundColor(.secondary)
                     }
                     
-                    Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                    Text(DuplicateFormat.size(file.fileSize))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -479,10 +505,11 @@ struct DuplicateFileRow: View {
                 } label: {
                     Image(systemName: "trash")
                         .font(.body)
-                        .foregroundColor(.red)
+                        .foregroundColor(canTrash ? .red : .gray)
                 }
                 .buttonStyle(.plain)
-                .help("Move to trash")
+                .disabled(!canTrash)
+                .help(canTrash ? "Move to trash" : "This is the only copy")
             }
         }
         .padding(.horizontal, 12)
@@ -490,7 +517,7 @@ struct DuplicateFileRow: View {
         .background(isSelected ? Color.blue.opacity(0.1) : Color.clear)
         .alert("Move to Trash", isPresented: $showingDeleteAlert) {
             Button("Move to Trash", role: .destructive) {
-                photoLibrary.movePhotoToTrash(file)
+                onTrash()
             }
             Button("Cancel", role: .cancel) { }
         } message: {

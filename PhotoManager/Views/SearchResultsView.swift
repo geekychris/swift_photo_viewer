@@ -7,7 +7,9 @@ struct SearchResultsView: View {
     let searchText: String
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
+    @StateObject private var actions = PhotoActionCenter()
     @State private var searchResults: [PhotoFile] = []
+    @State private var totalCount = 0
     @State private var thumbnailSize: CGFloat = 200
     @State private var minRating: Int = 0
     @State private var selectedColors: Set<String> = []
@@ -43,7 +45,7 @@ struct SearchResultsView: View {
                 
                 Spacer()
                 
-                Text("\(searchResults.count) photos found")
+                Text(totalCount > searchResults.count ? "Showing \(searchResults.count) of \(totalCount) photos" : "\(totalCount) photos found")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -198,36 +200,40 @@ struct SearchResultsView: View {
                 }
             }
         }
-        .onAppear {
-            performSearch()
+        .photoActions(actions)
+        .task(id: filter) {
+            // Debounce typing; a newer filter cancels this task.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await performSearch(filter)
         }
-        .onChange(of: searchText) {
-            performSearch()
-        }
-        .onChange(of: minRating) {
-            performSearch()
-        }
-        .onChange(of: selectedColors) {
-            performSearch()
+        .onChange(of: photoLibrary.libraryVersion) {
+            Task { await performSearch(filter) }
         }
     }
-    
-    private func performSearch() {
-        logger.info("Performing search - query: \(searchText, privacy: .public), minRating: \(minRating, privacy: .public), colors: \(selectedColors.count, privacy: .public)")
-        
-        // Get all results matching text search and rating
-        let ratingFilter = minRating > 0 ? minRating : nil
-        var results = photoLibrary.searchPhotos(query: searchText, minRating: ratingFilter, colorTag: nil)
-        
-        // Apply color filter if colors are selected
-        if !selectedColors.isEmpty {
-            results = results.filter { photo in
-                guard let colorTag = photo.colorTag else { return false }
-                return selectedColors.contains(colorTag)
+
+    private var filter: PhotoFilter {
+        var filter = PhotoFilter()
+        let text = searchText.trimmingCharacters(in: .whitespaces)
+        filter.text = text.isEmpty ? nil : text
+        filter.minRating = minRating > 0 ? minRating : nil
+        filter.colorTags = selectedColors
+        return filter
+    }
+
+    private func performSearch(_ filter: PhotoFilter) async {
+        let db = photoLibrary.databaseManager
+        let (results, total) = await Task.detached(priority: .userInitiated) { () -> ([PhotoFile], Int) in
+            do {
+                let total = try db.countPhotos(matching: filter).count
+                return (try db.photos(matching: filter, sort: .captureDescending, limit: 5000), total)
+            } catch {
+                logger.error("Search failed: \(error.localizedDescription, privacy: .public)")
+                return ([], 0)
             }
-        }
-        
+        }.value
+        guard filter == self.filter else { return }
         searchResults = results
-        logger.info("Found \(searchResults.count, privacy: .public) results")
+        totalCount = total
     }
 }

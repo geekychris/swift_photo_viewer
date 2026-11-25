@@ -1,5 +1,8 @@
 import SwiftUI
-//foo
+import os.log
+
+private let logger = Logger(subsystem: "com.photomarger", category: "detail")
+
 struct PhotoDetailView: View {
     let photo: PhotoFile
     @EnvironmentObject var photoLibrary: PhotoLibrary
@@ -266,16 +269,13 @@ struct PhotoDetailView: View {
                 }
             }
         }
-        .onAppear {
-            loadFullImage()
-            // Always reload metadata from database when view appears
-            currentPhotoId = nil // Force reload
-            loadPhotoMetadata()
+        .task(id: photo.id) {
+            // Always reload metadata from the database when the view appears or the photo changes
+            currentPhotoId = nil
+            await loadPhotoMetadata()
         }
-        .onChange(of: photo.id) { oldValue, newValue in
-            // Photo changed, reload metadata
-            currentPhotoId = nil // Force reload
-            loadPhotoMetadata()
+        .task(id: photo.id) {
+            await loadFullImage()
         }
         .sheet(isPresented: $showingFullscreenImage) {
             FullscreenImageView(image: fullImage, fileName: photo.fileName)
@@ -294,49 +294,24 @@ struct PhotoDetailView: View {
         photo.exifIso != nil || photo.exifFocalLength != nil
     }
     
-    private func loadPhotoMetadata() {
-        guard let photoId = photo.id else { 
-            print("❌ PhotoDetailView: No photo ID for metadata load")
-            return 
-        }
-        
-        print("🔍 PhotoDetailView: Loading metadata for photo ID: \(photoId)")
-        
-        // Always try to get fresh data from database
-        if let freshPhoto = photoLibrary.getPhotoById(photoId) {
-            userDescription = freshPhoto.userDescription ?? ""
-            userTags = freshPhoto.userTags ?? ""
-            rating = freshPhoto.rating
-            colorTag = freshPhoto.colorTag
-            currentPhotoId = photoId
-            print("🔄 PhotoDetailView: Loaded fresh metadata from DB")
-            print("   Description: \(freshPhoto.userDescription ?? "nil")")
-            print("   Tags: \(freshPhoto.userTags ?? "nil")")
-            print("   Rating: \(freshPhoto.rating)")
-            print("   Color: \(freshPhoto.colorTag ?? "nil")")
-        } else {
-            // Fall back to original photo data
-            userDescription = photo.userDescription ?? ""
-            userTags = photo.userTags ?? ""
-            rating = photo.rating
-            colorTag = photo.colorTag
-            currentPhotoId = photoId
-            print("⚠️ PhotoDetailView: Using stale photo data (DB lookup failed)")
-        }
+    private func loadPhotoMetadata() async {
+        guard let photoId = photo.id else { return }
+        let db = photoLibrary.databaseManager
+        let fresh = await Task.detached(priority: .userInitiated) { try? db.getPhotoById(photoId) }.value
+        // Fall back to the row we were given if the lookup failed
+        let source = fresh ?? photo
+        userDescription = source.userDescription ?? ""
+        userTags = source.userTags ?? ""
+        rating = source.rating
+        colorTag = source.colorTag
+        currentPhotoId = photoId
     }
     
     private func saveMetadata() {
-        guard let photoId = photo.id else {
-            print("❌ PhotoDetailView: No photo ID available")
-            return
-        }
+        guard let photoId = photo.id else { return }
         
         let description = userDescription.isEmpty ? nil : userDescription
         let tags = userTags.isEmpty ? nil : userTags
-        
-        print("💾 PhotoDetailView: Saving metadata for photo ID: \(photoId)")
-        print("   Description: \(description ?? "nil")")
-        print("   Tags: \(tags ?? "nil")")
         
         photoLibrary.updatePhotoMetadata(photoId, description: description, tags: tags)
         hasUnsavedChanges = false
@@ -346,8 +321,7 @@ struct PhotoDetailView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             showingSaveSuccess = false
         }
-        
-        print("✅ PhotoDetailView: Metadata saved successfully")
+
     }
     
     private func getPhotoPath() -> String {
@@ -364,111 +338,31 @@ struct PhotoDetailView: View {
     }
     
     private func openWithDefaultApp() {
-        guard let rootDirectory = photoLibrary.rootDirectories.first(where: { $0.id == photo.rootDirectoryId }) else {
-            print("❌ Cannot find root directory")
+        guard let rootDirectory = photoLibrary.rootDirectory(id: photo.rootDirectoryId) else {
+            logger.error("Cannot find root directory for photo \(photo.id ?? -1)")
             return
         }
-        
-        // Try to restore security-scoped access if we have bookmark data
-        var directoryURL: URL? = nil
-        var isAccessingSecurityScope = false
-        
-        if let bookmarkData = rootDirectory.bookmarkData {
-            do {
-                var isStale = false
-                directoryURL = try URL(resolvingBookmarkData: bookmarkData,
-                                      options: [.withSecurityScope],
-                                      relativeTo: nil,
-                                      bookmarkDataIsStale: &isStale)
-                
-                if let url = directoryURL {
-                    isAccessingSecurityScope = url.startAccessingSecurityScopedResource()
-                    print("🔓 Security-scoped access for open: \(isAccessingSecurityScope)")
-                }
-            } catch {
-                print("⚠️ Failed to resolve bookmark: \(error.localizedDescription)")
-            }
-        }
-        
-        let fullPath = getPhotoPath()
-        let fileURL = URL(fileURLWithPath: fullPath)
-        NSWorkspace.shared.open(fileURL)
-        
-        // Don't stop accessing immediately - let the other app open the file
-        if isAccessingSecurityScope {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                directoryURL?.stopAccessingSecurityScopedResource()
-            }
+        let fileURL = URL(fileURLWithPath: getPhotoPath())
+        SecurityScope.withAccess(rootDirectory) {
+            _ = NSWorkspace.shared.open(fileURL)
         }
     }
     
-    private func loadFullImage() {
-        Task {
-            // Get the full path to the image
-            guard let rootDirectory = photoLibrary.rootDirectories.first(where: { $0.id == photo.rootDirectoryId }) else {
-                print("❌ PhotoDetailView: Cannot find root directory for photo")
-                await MainActor.run {
-                    isLoading = false
-                }
-                return
-            }
-            
-            let fullPath = (rootDirectory.path as NSString).appendingPathComponent(photo.relativePath)
-            print("📷 PhotoDetailView: Loading image from: \(fullPath)")
-            
-            // Check if file exists
-            let fileManager = FileManager.default
-            if !fileManager.fileExists(atPath: fullPath) {
-                print("❌ PhotoDetailView: File does not exist at path")
-                await MainActor.run {
-                    fullImage = photoLibrary.getThumbnailImage(for: photo)
-                    isLoading = false
-                }
-                return
-            }
-            
-            // Try to restore security-scoped access if we have bookmark data
-            var directoryURL: URL? = nil
-            var isAccessingSecurityScope = false
-            
-            if let bookmarkData = rootDirectory.bookmarkData {
-                do {
-                    var isStale = false
-                    directoryURL = try URL(resolvingBookmarkData: bookmarkData,
-                                          options: [.withSecurityScope],
-                                          relativeTo: nil,
-                                          bookmarkDataIsStale: &isStale)
-                    
-                    if let url = directoryURL {
-                        isAccessingSecurityScope = url.startAccessingSecurityScopedResource()
-                        print("🔓 PhotoDetailView: Security-scoped access: \(isAccessingSecurityScope)")
-                    }
-                } catch {
-                    print("⚠️ PhotoDetailView: Failed to resolve bookmark: \(error.localizedDescription)")
-                }
-            }
-            
-            defer {
-                if isAccessingSecurityScope, let url = directoryURL {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
-            
-            await MainActor.run {
-                if let image = NSImage(contentsOfFile: fullPath) {
-                    fullImage = image
-                    print("✅ PhotoDetailView: Loaded full image - Size: \(image.size.width)x\(image.size.height)")
-                } else {
-                    print("⚠️ PhotoDetailView: NSImage failed to load, trying thumbnail")
-                    // Try loading thumbnail as fallback
-                    fullImage = photoLibrary.getThumbnailImage(for: photo)
-                    if let thumb = fullImage {
-                        print("📸 PhotoDetailView: Loaded thumbnail - Size: \(thumb.size.width)x\(thumb.size.height)")
-                    }
-                }
-                isLoading = false
-            }
+    /// Shows the thumbnail at once, then a large preview decoded off the main thread.
+    private func loadFullImage() async {
+        fullImage = nil
+        isLoading = true
+        if let thumb = await ThumbnailCache.shared.image(for: photo) {
+            fullImage = thumb
         }
+        let preview = await PreviewLoader.preview(for: photo, library: photoLibrary, maxPixel: 3000)
+        guard !Task.isCancelled else { return }
+        if let preview {
+            fullImage = preview
+        } else if fullImage == nil {
+            logger.error("Could not load image for \(photo.relativePath, privacy: .public)")
+        }
+        isLoading = false
     }
 }
 

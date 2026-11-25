@@ -1,5 +1,4 @@
 import SwiftUI
-//foo
 
 enum TimelineGranularity: String, CaseIterable {
     case month = "Monthly"
@@ -12,13 +11,12 @@ struct TimelineSidebarView: View {
     @Binding var sidebarWidth: CGFloat
     @Binding var selectedPhoto: PhotoFile?
     @Binding var selectedPeriod: String?
-    @State private var yearGroups: [(String, [(String, [PhotoFile])])] = []
+    @State private var yearGroups: [(year: String, periods: [PhotoLibrary.TimelinePeriod])] = []
     @State private var expandedYears: Set<String> = []
     @State private var granularity: TimelineGranularity = .month
     
     var body: some View {
         VStack(spacing: 0) {
-            // Granularity picker
             Picker("View", selection: $granularity) {
                 ForEach(TimelineGranularity.allCases, id: \.self) { gran in
                     Text(gran.rawValue).tag(gran)
@@ -28,67 +26,73 @@ struct TimelineSidebarView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
             
+            if selectedPeriod != nil {
+                Button {
+                    selectedPeriod = nil
+                } label: {
+                    Label("Clear period filter", systemImage: "xmark.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .padding(.bottom, 4)
+            }
+            
             Divider()
             
             ScrollView {
-                    LazyVStack(spacing: 0) {
-                    ForEach(yearGroups, id: \.0) { year, periodGroups in
+                LazyVStack(spacing: 0) {
+                    ForEach(yearGroups, id: \.year) { group in
                         TimelineYearHeaderView(
-                            year: year,
-                            totalPhotos: periodGroups.reduce(0) { $0 + $1.1.count },
-                            isExpanded: expandedYears.contains(year),
-                            onToggle: {
-                                toggleYearExpansion(year)
-                            }
+                            year: group.year,
+                            totalPhotos: group.periods.reduce(0) { $0 + $1.count },
+                            isExpanded: expandedYears.contains(group.year),
+                            onToggle: { toggleYearExpansion(group.year) }
                         )
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { selectedPeriod = group.year }
                         
                         Divider()
                         
-                        if expandedYears.contains(year) {
-                            ForEach(periodGroups, id: \.0) { period, photos in
+                        if expandedYears.contains(group.year) {
+                            ForEach(group.periods) { period in
                                 TimelinePeriodRowView(
-                                    period: period,
-                                    photos: photos,
+                                    period: period.key,
+                                    count: period.count,
                                     granularity: granularity,
-                                    isSelected: selectedPeriod == period,
+                                    isSelected: selectedPeriod == period.key,
                                     selectedPhoto: $selectedPhoto
                                 )
                                 .onTapGesture {
-                                    selectedPeriod = period
+                                    selectedPeriod = selectedPeriod == period.key ? nil : period.key
                                 }
-                                
                                 Divider()
                             }
                         }
-                        }
                     }
-                    .frame(width: sidebarWidth - 20)
-                    .padding(.horizontal, 10)
+                }
+                .frame(width: max(100, sidebarWidth - 20))
+                .padding(.horizontal, 10)
             }
         }
-        .onAppear {
-            loadTimelineData()
-        }
-        .onChange(of: photoLibrary.rootDirectories) {
-            loadTimelineData()
-        }
-        .onChange(of: granularity) {
-            loadTimelineData()
+        .task(id: "\(granularity.rawValue)-\(photoLibrary.libraryVersion)") {
+            await loadTimelineData()
         }
     }
     
-    private func loadTimelineData() {
+    private var dimension: PivotDimension {
         switch granularity {
-        case .month:
-            yearGroups = photoLibrary.getPhotosGroupedByYear()
-        case .week:
-            yearGroups = photoLibrary.getPhotosGroupedByYearAndWeek()
-        case .day:
-            yearGroups = photoLibrary.getPhotosGroupedByYearAndDay()
+        case .month: return .month
+        case .week: return .week
+        case .day: return .day
         }
-        
-        // Expand the most recent year by default
-        if let firstYear = yearGroups.first?.0 {
+    }
+    
+    private func loadTimelineData() async {
+        let dim = dimension
+        let library = photoLibrary
+        let groups = await Task.detached(priority: .userInitiated) { library.timeline(dim) }.value
+        yearGroups = groups
+        if expandedYears.isEmpty, let firstYear = groups.first?.year {
             expandedYears.insert(firstYear)
         }
     }
@@ -135,15 +139,17 @@ struct TimelineYearHeaderView: View {
 
 struct TimelinePeriodRowView: View {
     let period: String
-    let photos: [PhotoFile]
+    let count: Int
     let granularity: TimelineGranularity
     let isSelected: Bool
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingAllPhotos = false
+    @State private var photos: [PhotoFile] = []
     
     private var displayName: String {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         
         switch granularity {
         case .month:
@@ -189,7 +195,7 @@ struct TimelinePeriodRowView: View {
                 
                 Spacer()
                 
-                Text("\(photos.count)")
+                Text("\(count)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -213,7 +219,7 @@ struct TimelinePeriodRowView: View {
                                 .environmentObject(photoLibrary)
                             }
                             
-                            if photos.count > maxThumbnails {
+                            if count > maxThumbnails {
                                 Button {
                                     showingAllPhotos = true
                                 } label: {
@@ -225,7 +231,7 @@ struct TimelinePeriodRowView: View {
                                                 Image(systemName: "plus.circle.fill")
                                                     .font(.caption)
                                                     .foregroundColor(.blue)
-                                                Text("\(photos.count - maxThumbnails)")
+                                                Text("\(count - maxThumbnails)")
                                                     .font(.caption2)
                                                     .foregroundColor(.blue)
                                             }
@@ -246,8 +252,14 @@ struct TimelinePeriodRowView: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
         )
+        .task(id: "\(period)-\(photoLibrary.libraryVersion)") {
+            // Only the handful of thumbnails this row shows.
+            let filter = PhotoFilter.forPeriod(period)
+            let db = photoLibrary.databaseManager
+            photos = await Task.detached { (try? db.photos(matching: filter, sort: .captureAscending, limit: 12)) ?? [] }.value
+        }
         .sheet(isPresented: $showingAllPhotos) {
-            TimelinePhotoGridSheet(period: displayName, photos: photos)
+            TimelinePhotoGridSheet(period: displayName, filter: PhotoFilter.forPeriod(period))
                 .presentationSizing(.fitted)
         }
     }
@@ -267,9 +279,10 @@ struct TimelineThumbnailView: View {
 
 struct TimelinePhotoGridSheet: View {
     let period: String
-    let photos: [PhotoFile]
+    let filter: PhotoFilter
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var photoLibrary: PhotoLibrary
+    @State private var photos: [PhotoFile] = []
     @State private var selectedPhoto: PhotoFile?
     @State private var thumbnailSize: CGFloat = 150
     
@@ -340,6 +353,11 @@ struct TimelinePhotoGridSheet: View {
         .sheet(item: $selectedPhoto) { photo in
             PhotoDetailView(photo: photo)
         }
+        .task {
+            let db = photoLibrary.databaseManager
+            let filter = self.filter
+            photos = await Task.detached { (try? db.photos(matching: filter, sort: .captureAscending)) ?? [] }.value
+        }
     }
 }
 
@@ -347,36 +365,16 @@ struct TimelineGridThumbnailView: View {
     let photo: PhotoFile
     let thumbnailSize: CGFloat
     @EnvironmentObject var photoLibrary: PhotoLibrary
-    @State private var thumbnailImage: NSImage?
     
     var body: some View {
         VStack(spacing: 4) {
-            Group {
-                if let thumbnailImage = thumbnailImage {
-                    Image(nsImage: thumbnailImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.gray.opacity(0.3))
-                        .overlay(
-                            Image(systemName: "photo")
-                                .font(.title2)
-                                .foregroundColor(.gray)
-                        )
-                }
-            }
-            .frame(width: thumbnailSize, height: thumbnailSize)
-            .clipped()
-            .cornerRadius(6)
+            AsyncThumbnail(photo: photo, size: thumbnailSize)
+                .cornerRadius(6)
             
             Text(photo.fileName)
                 .font(.caption2)
                 .lineLimit(1)
                 .frame(maxWidth: thumbnailSize)
-        }
-        .onAppear {
-            thumbnailImage = photoLibrary.getThumbnailImage(for: photo)
         }
     }
 }

@@ -1,5 +1,8 @@
 import SwiftUI
-//foo
+import os.log
+
+private let sidebarLogger = Logger(subsystem: "com.photomarger", category: "sidebar")
+
 struct DirectorySidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var selectedDirectoryId: Int64?
@@ -44,19 +47,40 @@ struct DirectorySidebarView: View {
     }
     
     private func toggleExpansion(for directory: RootDirectory) {
-        guard let id = directory.id else { 
-            print("⚠️ DirectorySidebarView: Directory has no ID for toggle")
-            return 
-        }
-        
+        guard let id = directory.id else { return }
         if expandedDirectories.contains(id) {
-            print("🔽 DirectorySidebarView: Collapsing directory: \(directory.name)")
             expandedDirectories.remove(id)
         } else {
-            print("🔼 DirectorySidebarView: Expanding directory: \(directory.name)")
             expandedDirectories.insert(id)
         }
     }
+}
+
+
+/// Folder hierarchy of one root built from per-directory photo counts.
+/// Paths are relative to the root; "" is the root itself.
+struct FolderTree {
+    private(set) var direct: [String: Int] = [:]
+    private(set) var total: [String: Int] = [:]
+    private(set) var children: [String: [String]] = [:]
+
+    init(counts: [(path: String, count: Int)] = []) {
+        var kids: [String: Set<String>] = [:]
+        for (path, count) in counts {
+            direct[path, default: 0] += count
+            var current = path
+            total[current, default: 0] += count
+            while !current.isEmpty {
+                let parent = (current as NSString).deletingLastPathComponent
+                kids[parent, default: []].insert(current)
+                current = parent
+                total[current, default: 0] += count
+            }
+        }
+        children = kids.mapValues { $0.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    }
+
+    var totalCount: Int { total[""] ?? 0 }
 }
 
 struct DirectoryRowView: View {
@@ -69,19 +93,10 @@ struct DirectoryRowView: View {
     let onScan: () -> Void
     
     @EnvironmentObject var photoLibrary: PhotoLibrary
-    @State private var photos: [PhotoFile] = []
-    @State private var subdirectories: [String: [PhotoFile]] = [:]
-    @State private var expandedSubdirectories: Set<String> = []
-    @State private var showingScanOptions = false
+    @State private var tree = FolderTree()
+    @State private var fileTypeStats: [(ext: String, count: Int)] = []
+    @State private var expandedFolders: Set<String> = []
     @State private var showingDeleteAlert = false
-    
-    private var fileTypeStats: [String: Int] {
-        let grouped = Dictionary(grouping: photos) { photo -> String in
-            let ext = (photo.fileName as NSString).pathExtension.uppercased()
-            return ext.isEmpty ? "Unknown" : ext
-        }
-        return grouped.mapValues { $0.count }
-    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -99,7 +114,7 @@ struct DirectoryRowView: View {
                         Text(directory.name)
                             .fontWeight(.medium)
                         
-                        Text("\(photos.count) files")
+                        Text("\(tree.totalCount) files")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.leading, 4)
@@ -108,12 +123,12 @@ struct DirectoryRowView: View {
                     // File type breakdown
                     if !fileTypeStats.isEmpty {
                         HStack(spacing: 6) {
-                            ForEach(Array(fileTypeStats.keys.sorted()), id: \.self) { ext in
+                            ForEach(fileTypeStats, id: \.ext) { stat in
                                 HStack(spacing: 2) {
-                                    Text(ext)
+                                    Text(stat.ext)
                                         .font(.caption2)
                                         .foregroundColor(.blue)
-                                    Text("\(fileTypeStats[ext] ?? 0)")
+                                    Text("\(stat.count)")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -146,7 +161,6 @@ struct DirectoryRowView: View {
                 
                 Menu {
                     Button {
-                        print("🔄 DirectoryRowView: Fast scan clicked for directory: \(directory.name)")
                         Task {
                             await photoLibrary.scanDirectory(directory, fastScan: true, regenerateThumbnails: false)
                         }
@@ -155,7 +169,6 @@ struct DirectoryRowView: View {
                     }
                     
                     Button {
-                        print("🔄 DirectoryRowView: Full scan clicked for directory: \(directory.name)")
                         Task {
                             await photoLibrary.scanDirectory(directory, fastScan: false, regenerateThumbnails: false)
                         }
@@ -164,7 +177,6 @@ struct DirectoryRowView: View {
                     }
                     
                     Button {
-                        print("🖼 DirectoryRowView: Regenerate all thumbnails clicked for directory: \(directory.name)")
                         Task {
                             await photoLibrary.scanDirectory(directory, fastScan: false, regenerateThumbnails: true)
                         }
@@ -190,24 +202,27 @@ struct DirectoryRowView: View {
             
             if isExpanded {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(subdirectories.keys.sorted(), id: \.self) { subdirectory in
-                        SubdirectoryRowView(
-                            subdirectory: subdirectory,
-                            photos: subdirectories[subdirectory] ?? [],
-                            isExpanded: expandedSubdirectories.contains(subdirectory),
-                            isSelected: selectedDirectoryId == directory.id && selectedSubdirectoryPath == subdirectory,
-                            selectedPhoto: $selectedPhoto,
-                            onToggle: {
-                                if expandedSubdirectories.contains(subdirectory) {
-                                    expandedSubdirectories.remove(subdirectory)
-                                } else {
-                                    expandedSubdirectories.insert(subdirectory)
-                                }
-                            },
-                            onSelect: {
-                                selectedDirectoryId = directory.id
-                                selectedSubdirectoryPath = subdirectory
-                            }
+                    // Files directly in the root, kept apart from real folders (one may be called "Root").
+                    if (tree.direct[""] ?? 0) > 0 {
+                        FolderNodeView(
+                            rootId: directory.id,
+                            path: "",
+                            tree: tree,
+                            expandedFolders: $expandedFolders,
+                            selectedDirectoryId: $selectedDirectoryId,
+                            selectedSubdirectoryPath: $selectedSubdirectoryPath,
+                            selectedPhoto: $selectedPhoto
+                        )
+                    }
+                    ForEach(tree.children[""] ?? [], id: \.self) { folder in
+                        FolderNodeView(
+                            rootId: directory.id,
+                            path: folder,
+                            tree: tree,
+                            expandedFolders: $expandedFolders,
+                            selectedDirectoryId: $selectedDirectoryId,
+                            selectedSubdirectoryPath: $selectedSubdirectoryPath,
+                            selectedPhoto: $selectedPhoto
                         )
                     }
                 }
@@ -217,11 +232,8 @@ struct DirectoryRowView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .onAppear {
-            loadPhotos()
-        }
-        .onChange(of: photoLibrary.rootDirectories) {
-            loadPhotos()
+        .task(id: "\(directory.id ?? -1)-\(photoLibrary.libraryVersion)") {
+            await loadCounts()
         }
         .alert("Remove Directory", isPresented: $showingDeleteAlert) {
             Button("Remove", role: .destructive) {
@@ -233,67 +245,80 @@ struct DirectoryRowView: View {
         }
     }
     
-    private func loadPhotos() {
-        guard let directoryId = directory.id else { 
-            print("⚠️ DirectoryRowView: Directory has no ID for loading photos")
-            return 
-        }
-        
-        print("📷 DirectoryRowView: Loading photos for directory: \(directory.name) (ID: \(directoryId))")
-        photos = photoLibrary.getPhotosForDirectory(directoryId)
-        print("📊 DirectoryRowView: Loaded \(photos.count) photos for \(directory.name)")
-        
-        // Group photos by subdirectory
-        subdirectories = Dictionary(grouping: photos) { photo in
-            let pathComponents = photo.relativePath.split(separator: "/")
-            if pathComponents.count > 1 {
-                return String(pathComponents[0])
-            } else {
-                return "Root"
+    private func loadCounts() async {
+        guard let rootId = directory.id else { return }
+        let db = photoLibrary.databaseManager
+        let (counts, exts) = await Task.detached(priority: .userInitiated) { () -> ([(path: String, count: Int)], [(ext: String, count: Int)]) in
+            do {
+                return (try db.directoryCounts(rootId: rootId), try db.extensionCounts(rootId: rootId))
+            } catch {
+                sidebarLogger.error("Folder counts failed: \(error.localizedDescription, privacy: .public)")
+                return ([], [])
             }
-        }
-        print("🗺 DirectoryRowView: Grouped into \(subdirectories.count) subdirectories")
+        }.value
+        guard !Task.isCancelled else { return }
+        tree = FolderTree(counts: counts)
+        fileTypeStats = exts
+            .map { (ext: $0.ext.isEmpty ? "Unknown" : $0.ext.uppercased(), count: $0.count) }
+            .sorted { $0.ext < $1.ext }
     }
 }
 
-struct SubdirectoryRowView: View {
-    let subdirectory: String
-    let photos: [PhotoFile]
-    let isExpanded: Bool
-    let isSelected: Bool
+/// One folder in the tree: select it to show it (with subfolders) in the grid, expand it for
+/// its subfolders and a preview of the files directly in it.
+struct FolderNodeView: View {
+    let rootId: Int64?
+    let path: String
+    let tree: FolderTree
+    @Binding var expandedFolders: Set<String>
+    @Binding var selectedDirectoryId: Int64?
+    @Binding var selectedSubdirectoryPath: String?
     @Binding var selectedPhoto: PhotoFile?
-    let onToggle: () -> Void
-    let onSelect: () -> Void
-    @EnvironmentObject var photoLibrary: PhotoLibrary
-    
+
+    private var isRootFiles: Bool { path.isEmpty }
+    private var isExpanded: Bool { expandedFolders.contains(path) }
+    private var isSelected: Bool { selectedDirectoryId == rootId && selectedSubdirectoryPath == path }
+    private var subfolders: [String] { isRootFiles ? [] : (tree.children[path] ?? []) }
+    private var count: Int { isRootFiles ? (tree.direct[""] ?? 0) : (tree.total[path] ?? 0) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Button(action: onToggle) {
+                Button {
+                    if isExpanded { expandedFolders.remove(path) } else { expandedFolders.insert(path) }
+                } label: {
                     HStack(spacing: 4) {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        
-                        Image(systemName: "folder.fill")
+                        Image(systemName: isRootFiles ? "doc.on.doc" : "folder.fill")
                             .foregroundColor(.blue)
                             .font(.caption)
                     }
                 }
                 .buttonStyle(PlainButtonStyle())
-                
-                Button(action: onSelect) {
+
+                Button {
+                    selectedDirectoryId = rootId
+                    selectedSubdirectoryPath = path
+                } label: {
                     HStack {
-                        Text(subdirectory)
-                            .font(.caption)
-                            .foregroundColor(.primary)
-                        
+                        if isRootFiles {
+                            Text("Files in top folder")
+                                .font(.caption)
+                                .italic()
+                                .foregroundColor(.primary)
+                        } else {
+                            Text((path as NSString).lastPathComponent)
+                                .font(.caption)
+                                .foregroundColor(.primary)
+                        }
                         Spacer()
-                        
-                        Text("\(photos.count)")
+                        Text("\(count)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
             }
@@ -301,33 +326,75 @@ struct SubdirectoryRowView: View {
             .padding(.vertical, 2)
             .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
             .cornerRadius(4)
-            
+
             if isExpanded {
-                // Show thumbnails in a grid
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 40, maximum: 60), spacing: 4)], spacing: 4) {
-                    ForEach(photos.prefix(20)) { photo in
-                        ReusableHoverThumbnail(photo: photo, size: 50, onTap: {
-                            selectedPhoto = photo
-                        })
-                        .environmentObject(photoLibrary)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(subfolders, id: \.self) { child in
+                        FolderNodeView(
+                            rootId: rootId,
+                            path: child,
+                            tree: tree,
+                            expandedFolders: $expandedFolders,
+                            selectedDirectoryId: $selectedDirectoryId,
+                            selectedSubdirectoryPath: $selectedSubdirectoryPath,
+                            selectedPhoto: $selectedPhoto
+                        )
                     }
-                    
-                    if photos.count > 20 {
-                        VStack {
-                            Image(systemName: "ellipsis")
-                                .foregroundColor(.secondary)
-                            Text("+\(photos.count - 20)")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(width: 50, height: 50)
-                        .background(Color.gray.opacity(0.1))
-                        .cornerRadius(4)
+                    if (tree.direct[path] ?? 0) > 0 {
+                        FolderPreviewView(rootId: rootId, path: path, directCount: tree.direct[path] ?? 0, selectedPhoto: $selectedPhoto)
                     }
                 }
-                .padding(.leading, 20)
-                .padding(.top, 4)
+                .padding(.leading, 16)
             }
+        }
+    }
+}
+
+/// Up to 20 thumbnails of the files directly in a folder, loaded on demand.
+struct FolderPreviewView: View {
+    let rootId: Int64?
+    let path: String
+    let directCount: Int
+    @Binding var selectedPhoto: PhotoFile?
+    @EnvironmentObject var photoLibrary: PhotoLibrary
+    @State private var photos: [PhotoFile] = []
+
+    private static let limit = 20
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 40, maximum: 60), spacing: 4)], spacing: 4) {
+            ForEach(photos) { photo in
+                ReusableHoverThumbnail(photo: photo, size: 50, onTap: {
+                    selectedPhoto = photo
+                })
+                .environmentObject(photoLibrary)
+            }
+
+            if directCount > Self.limit {
+                VStack {
+                    Image(systemName: "ellipsis")
+                        .foregroundColor(.secondary)
+                    Text("+\(directCount - Self.limit)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(width: 50, height: 50)
+                .background(Color.gray.opacity(0.1))
+                .cornerRadius(4)
+            }
+        }
+        .padding(.top, 4)
+        .task(id: "\(rootId ?? -1)/\(path)/\(photoLibrary.libraryVersion)") {
+            guard let rootId else { return }
+            var filter = PhotoFilter()
+            filter.rootDirectoryId = rootId
+            filter.directoryPath = path
+            let db = photoLibrary.databaseManager
+            let loaded = await Task.detached(priority: .utility) {
+                (try? db.photos(matching: filter, sort: .name, limit: Self.limit)) ?? []
+            }.value
+            guard !Task.isCancelled else { return }
+            photos = loaded
         }
     }
 }

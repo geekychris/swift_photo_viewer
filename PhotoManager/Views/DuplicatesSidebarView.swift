@@ -1,5 +1,5 @@
 import SwiftUI
-//foo
+
 struct DuplicatesSidebarView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @Binding var sidebarWidth: CGFloat
@@ -26,6 +26,12 @@ struct DuplicatesSidebarView: View {
                 .frame(maxWidth: 300)
                 
                 Spacer()
+
+                if photoLibrary.isLoadingDuplicates {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("Finding duplicates…")
+                }
                 
                 Button {
                     exportToCSV()
@@ -137,7 +143,7 @@ struct DuplicateGroupRowView: View {
     
     private var wastedSpace: String {
         let bytes = group.totalSize - (group.files.first?.fileSize ?? 0)
-        return ByteCountFormatter().string(fromByteCount: bytes)
+        return DuplicateFormat.size(bytes)
     }
     
     var body: some View {
@@ -189,7 +195,7 @@ struct DuplicateGroupRowView: View {
             if isExpanded {
                 VStack(spacing: 6) {
                     ForEach(group.files) { file in
-                        DuplicateFileRowView(file: file, selectedPhoto: $selectedPhoto)
+                        DuplicateFileRowView(file: file, canTrash: group.files.count > 1, selectedPhoto: $selectedPhoto)
                     }
                 }
                 .padding(.leading, 20)
@@ -203,9 +209,12 @@ struct DuplicateGroupRowView: View {
 
 struct DuplicateFileRowView: View {
     let file: PhotoFile
+    /// False when this is the only remaining copy.
+    var canTrash = true
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingDeleteAlert = false
+    @State private var trashResultMessage: String?
     
     var body: some View {
         HStack(spacing: 8) {
@@ -221,7 +230,7 @@ struct DuplicateFileRowView: View {
                     .lineLimit(1)
                 
                 HStack {
-                    Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                    Text(DuplicateFormat.size(file.fileSize))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     
@@ -242,11 +251,12 @@ struct DuplicateFileRowView: View {
                 showingDeleteAlert = true
             } label: {
                 Image(systemName: "trash")
-                    .foregroundColor(.red)
+                    .foregroundColor(canTrash ? .red : .gray)
                     .font(.caption)
             }
             .buttonStyle(PlainButtonStyle())
-            .help("Delete this duplicate")
+            .disabled(!canTrash)
+            .help(canTrash ? "Delete this duplicate" : "This is the only copy")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -256,11 +266,17 @@ struct DuplicateFileRowView: View {
         )
         .alert("Move Photo to Trash", isPresented: $showingDeleteAlert) {
             Button("Move to Trash", role: .destructive) {
-                photoLibrary.movePhotoToTrash(file)
+                let result = photoLibrary.trashPhotos([file])  // guarded: never the last copy
+                if !result.keptLastCopy.isEmpty { trashResultMessage = result.summary + "." }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to move '\(file.fileName)' to the Trash?\n\nThis will move the file to the Trash and remove it from the database.")
+        }
+        .alert("Duplicates", isPresented: Binding(get: { trashResultMessage != nil }, set: { if !$0 { trashResultMessage = nil } })) {
+            Button("OK", role: .cancel) { trashResultMessage = nil }
+        } message: {
+            Text(trashResultMessage ?? "")
         }
     }
 }
