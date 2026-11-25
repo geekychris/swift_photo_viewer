@@ -115,6 +115,7 @@ final class FileScanningService {
                 let present = Set(listing.files.map(\.relativePath))
                 let missing = index.filter { !present.contains($0.key) }.map(\.value.id)
                 if !missing.isEmpty {
+                    try databaseManager.transferUserData(fromMissing: missing, rootId: rootId)
                     let orphaned = try databaseManager.deletePhotos(ids: missing)
                     ThumbnailService.deleteThumbnails(forHashes: orphaned)
                     summary.removed = missing.count
@@ -155,6 +156,7 @@ final class FileScanningService {
         }
 
         let prefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        let resolvedPrefix = rootURL.resolvingSymlinksInPath().path + "/"
         var files: [ListedFile] = []
         for case let url as URL in enumerator {
             guard let kind = MediaKind(fileExtension: url.pathExtension),
@@ -165,10 +167,12 @@ final class FileScanningService {
             let relative: String
             if path.hasPrefix(prefix) {
                 relative = String(path.dropFirst(prefix.count))
-            } else if let range = path.range(of: "/" + rootURL.lastPathComponent + "/") {
-                relative = String(path[range.upperBound...])
+            } else if case let resolved = url.resolvingSymlinksInPath().path, resolved.hasPrefix(resolvedPrefix) {
+                relative = String(resolved.dropFirst(resolvedPrefix.count))
             } else {
-                relative = url.lastPathComponent
+                logger.warning("Skipping \(path, privacy: .public): not under \(rootPath, privacy: .public)")
+                hadErrors = true
+                continue
             }
             files.append(ListedFile(path: path, relativePath: relative, size: Int64(values.fileSize ?? 0),
                                     modified: values.contentModificationDate ?? Date(timeIntervalSince1970: 0),

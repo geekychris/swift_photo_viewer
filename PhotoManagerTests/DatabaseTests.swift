@@ -165,6 +165,46 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(try db.countPhotos(matching: f).count, 3)
     }
     
+    func testScanCarriesLabelsAcrossAMoveAndKeepsThemOnRescan() async throws {
+        let rootURL = dir.appendingPathComponent("lib")
+        try FileManager.default.createDirectory(at: rootURL.appendingPathComponent("a"), withIntermediateDirectories: true)
+        try Data("photo-bytes".utf8).write(to: rootURL.appendingPathComponent("a/IMG_1.jpg"))
+        let rootId = try db.addRootDirectory(RootDirectory(path: rootURL.path, name: "lib"))
+        let root = try XCTUnwrap(db.getRootDirectories().first)
+        let scanner = FileScanningService(databaseManager: db)
+        
+        var summary = try await scanner.scanDirectory(root)
+        XCTAssertEqual(summary.added, 1)
+        let id = try XCTUnwrap(db.photos(matching: .all).first?.id)
+        try db.updatePhotoRating(id, rating: 5)
+        let event = try db.createEvent(name: "Trip", parentId: nil)
+        try db.assignPhotos([id], toEvent: event)
+        
+        summary = try await scanner.scanDirectory(root)
+        XCTAssertEqual(summary.unchanged, 1)
+        
+        // Moved outside the app: the new row inherits the labels.
+        try FileManager.default.createDirectory(at: rootURL.appendingPathComponent("b"), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: rootURL.appendingPathComponent("a/IMG_1.jpg"), to: rootURL.appendingPathComponent("b/IMG_1.jpg"))
+        summary = try await scanner.scanDirectory(root)
+        XCTAssertEqual(summary.removed, 1)
+        let moved = try XCTUnwrap(db.photos(matching: .all).first)
+        XCTAssertEqual(moved.relativePath, "b/IMG_1.jpg")
+        XCTAssertEqual(moved.rating, 5)
+        XCTAssertEqual(moved.eventId, event)
+        XCTAssertEqual(moved.rootDirectoryId, rootId)
+    }
+    
+    func testScanRefusesMissingRootInsteadOfEmptyingIt() async throws {
+        let root = RootDirectory(id: try addRoot("not-mounted"), path: dir.appendingPathComponent("not-mounted").path, name: "x")
+        try db.upsert([Self.scanned(root.id!, "a.jpg", hash: "1")])
+        do {
+            _ = try await FileScanningService(databaseManager: db).scanDirectory(root)
+            XCTFail("expected rootUnavailable")
+        } catch {}
+        XCTAssertEqual(try db.countPhotos(matching: .all).count, 1)
+    }
+    
     func testDeletingRootCascades() throws {
         let root = try addRoot()
         try db.upsert([Self.scanned(root, "a.jpg", hash: "1")])

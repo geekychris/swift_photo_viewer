@@ -799,6 +799,39 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    /// Before rows for vanished files are deleted: if the same content turned up elsewhere in the root
+    /// (the file was moved or renamed outside the app), carry the user's labels over to the new row.
+    /// Returns how many rows inherited labels.
+    @discardableResult
+    func transferUserData(fromMissing missingIds: [Int64], rootId: Int64) throws -> Int {
+        guard !missingIds.isEmpty else { return 0 }
+        let db = try conn()
+        var transferred = 0
+        try db.transaction {
+            let json = Self.jsonArray(missingIds)
+            let sources = try db.prepare("""
+                SELECT id, file_hash, rating, color_tag, user_description, user_tags, event_id FROM photo_files
+                WHERE id IN (SELECT value FROM json_each(?))
+                  AND (rating > 0 OR color_tag IS NOT NULL OR user_description IS NOT NULL OR user_tags IS NOT NULL
+                       OR event_id IS NOT NULL OR id IN (SELECT photo_id FROM photo_tags))
+                """, json).map { $0 }
+            for row in sources {
+                guard let oldId = row[0] as? Int64, let hash = row[1] as? String else { continue }
+                guard let newId = try db.scalar("""
+                    SELECT id FROM photo_files
+                    WHERE root_directory_id = ? AND file_hash = ? AND id NOT IN (SELECT value FROM json_each(?))
+                      AND rating = 0 AND color_tag IS NULL AND user_description IS NULL AND event_id IS NULL
+                    ORDER BY id DESC LIMIT 1
+                    """, rootId, hash, json) as? Int64 else { continue }
+                try db.run("UPDATE photo_files SET rating = ?, color_tag = ?, user_description = ?, user_tags = ?, event_id = ? WHERE id = ?",
+                           row[2], row[3], row[4], row[5], row[6], newId)
+                try db.run("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) SELECT ?, tag_id FROM photo_tags WHERE photo_id = ?", newId, oldId)
+                transferred += 1
+            }
+        }
+        return transferred
+    }
+    
     /// Deletes rows by id and returns the hashes that no longer have any row (their thumbnails can go).
     @discardableResult
     func deletePhotos(ids: [Int64]) throws -> [String] {
