@@ -174,9 +174,12 @@ final class ThumbnailCache: @unchecked Sendable {
         return c
     }()
 
+    /// The catalogued thumbnail path, or else where a content-addressed thumbnail for this hash would be
+    /// (it may have been generated after this row was loaded).
     private func key(_ photo: PhotoFile) -> NSString? {
-        guard photo.hasThumbnail, let path = photo.thumbnailPath, !path.isEmpty else { return nil }
-        return path as NSString
+        if photo.hasThumbnail, let path = photo.thumbnailPath, !path.isEmpty { return path as NSString }
+        guard !photo.fileHash.isEmpty else { return nil }
+        return ThumbnailService.thumbnailURL(forHash: photo.fileHash).path as NSString
     }
 
     func cachedImage(for photo: PhotoFile) -> NSImage? {

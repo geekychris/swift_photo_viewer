@@ -376,15 +376,6 @@ class PhotoLibrary: ObservableObject {
         }
     }
 
-    func deleteDuplicateDirectory(_ directoryPath: String, rootId: Int64) {
-        do {
-            _ = try databaseManager.deletePhotosInDirectory(directoryPath, rootId: rootId)
-            libraryDidChange()
-        } catch {
-            errorMessage = "Failed to delete directory: \(error.localizedDescription)"
-        }
-    }
-
     /// Trashes the listed files of a duplicate directory (never the folder itself, which may hold
     /// subfolders or other files), keeping one copy of anything not stored elsewhere.
     func moveDirectoryToTrash(_ directoryInfo: DirectoryInfo) {

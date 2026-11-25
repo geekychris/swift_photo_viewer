@@ -33,9 +33,8 @@ struct AsyncThumbnail: View {
         .clipped()
         .task(id: "\(photo.id ?? 0)-\(photo.thumbnailPath ?? "")-\(photoLibrary.thumbnailsUpdated.timeIntervalSince1970)") {
             if image == nil || ThumbnailCache.shared.cachedImage(for: photo) == nil {
-                // A row without a thumbnail may have gained one; re-read it.
-                let fresh = photo.hasThumbnail ? photo : (photoLibrary.getPhotoById(photo.id ?? -1) ?? photo)
-                image = await ThumbnailCache.shared.image(for: fresh)
+                // Off the main thread; finds thumbnails generated after this row was loaded.
+                image = await ThumbnailCache.shared.image(for: photo)
             }
         }
     }

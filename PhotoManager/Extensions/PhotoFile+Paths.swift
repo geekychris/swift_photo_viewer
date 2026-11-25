@@ -5,9 +5,6 @@ extension PhotoFile {
     /// Never returns a relative path - throws error if root directory not found
     func getAbsoluteFullPath(rootDirectories: [RootDirectory]) -> String? {
         guard let rootDir = rootDirectories.first(where: { $0.id == self.rootDirectoryId }) else {
-            print("❌ ERROR: No root directory found for rootDirectoryId: \(self.rootDirectoryId)")
-            print("   Available roots: \(rootDirectories.map { "ID \($0.id): \($0.path)" }.joined(separator: ", "))")
-            print("   File: \(self.fileName)")
             return nil
         }
         
@@ -15,7 +12,6 @@ extension PhotoFile {
         
         // Verify it's an absolute path
         guard fullPath.hasPrefix("/") else {
-            print("❌ ERROR: Generated path is not absolute: \(fullPath)")
             return nil
         }
         
@@ -26,8 +22,6 @@ extension PhotoFile {
     /// Never returns a relative path - throws error if root directory not found
     func getAbsoluteDirectoryPath(rootDirectories: [RootDirectory]) -> String? {
         guard let rootDir = rootDirectories.first(where: { $0.id == self.rootDirectoryId }) else {
-            print("❌ ERROR: No root directory found for rootDirectoryId: \(self.rootDirectoryId)")
-            print("   Available roots: \(rootDirectories.map { "ID \($0.id): \($0.path)" }.joined(separator: ", "))")
             return nil
         }
         
@@ -36,7 +30,6 @@ extension PhotoFile {
         
         // Verify it's an absolute path
         guard fullDirPath.hasPrefix("/") else {
-            print("❌ ERROR: Generated directory path is not absolute: \(fullDirPath)")
             return nil
         }
         

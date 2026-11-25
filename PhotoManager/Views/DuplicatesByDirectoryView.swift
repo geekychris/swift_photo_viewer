@@ -1,3 +1,5 @@
+// NOTE: Not instantiated anywhere at present (superseded by SimplifiedDuplicatesView and
+// DirectoryComparisonView). Kept compiling and safe: every delete goes through trashPhotos.
 import SwiftUI
 
 struct DuplicatesByDirectoryView: View {
@@ -106,7 +108,7 @@ struct CompleteDuplicateDirectoryRowView: View {
     
     private var totalWastedSize: String {
         let wastedSize = completeDir.totalSize * Int64(completeDir.duplicateDirectories.count)
-        return ByteCountFormatter().string(fromByteCount: wastedSize)
+        return DuplicateFormat.size(wastedSize)
     }
     
     var body: some View {
@@ -261,7 +263,7 @@ struct DirectoryRowWithContents: View {
                                     .foregroundColor(.primary)
                                     .lineLimit(1)
                                 
-                                Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                                Text(DuplicateFormat.size(file.fileSize))
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
@@ -302,7 +304,7 @@ struct DirectoryDuplicateRowView: View {
     @State private var analysisError: String?
     
     private var wastedSizeStr: String {
-        return ByteCountFormatter().string(fromByteCount: dirInfo.wastedSize)
+        return DuplicateFormat.size(dirInfo.wastedSize)
     }
     
     var body: some View {
@@ -506,7 +508,6 @@ struct DirectoryDuplicateRowView: View {
         .padding(.vertical, 4)
         .onChange(of: isExpanded) { _, newValue in
             if newValue && otherDirectoriesWithSameFiles.isEmpty && duplicatesInSameDirectory == 0 && !isAnalyzing {
-                print("🎯 Directory expanded, starting analysis")
                 Task {
                     await findOtherDirectories()
                 }
@@ -539,8 +540,6 @@ struct DirectoryDuplicateRowView: View {
         let duplicateGroups = photoLibrary.duplicateGroups
         let rootDirectories = photoLibrary.rootDirectories
         
-        print("🔍 Starting analysis for \(currentDirPath) with \(files.count) files")
-        print("📊 Total duplicate groups: \(duplicateGroups.count)")
         
         // Run analysis in background
         let result = await Task.detached(priority: .userInitiated) { () -> (otherDirs: [String: Int], sameDirCount: Int) in
@@ -550,24 +549,18 @@ struct DirectoryDuplicateRowView: View {
             // Create a hash map for faster lookups
             let duplicateGroupsByHash = Dictionary(grouping: duplicateGroups, by: { $0.fileHash })
             
-            print("🗂 Created hash map with \(duplicateGroupsByHash.count) entries")
             
             // For each duplicate file in this directory, find where else it exists
-            for (index, file) in files.enumerated() {
-                if index % 100 == 0 {
-                    print("📝 Processing file \(index + 1)/\(files.count)")
-                }
+            for file in files {
                 
                 // Find all locations of this file using hash map
                 if let groups = duplicateGroupsByHash[file.fileHash], let duplicateGroup = groups.first {
-                    print("✅ Found duplicate group for \(file.fileName) with \(duplicateGroup.files.count) locations")
                     
                     var foundInOtherDir = false
                     for otherFile in duplicateGroup.files {
                         // Get the directory path for this other file
                         let rootDir = rootDirectories.first(where: { $0.id == otherFile.rootDirectoryId })
                         guard let rootPath = rootDir?.path else { 
-                            print("⚠️ No root path for file \(otherFile.fileName)")
                             continue 
                         }
                         
@@ -582,25 +575,20 @@ struct DirectoryDuplicateRowView: View {
                         foundInOtherDir = true
                         // Count how many files from our directory exist in this other directory
                         directoryCount[fullDirPath, default: 0] += 1
-                        print("📍 Found duplicate in: \(fullDirPath)")
                     }
                     
                     // If this file has duplicates but none in other directories, it's a same-directory duplicate
                     if !foundInOtherDir {
                         sameDirectoryDuplicates += 1
-                        print("🔁 File \(file.fileName) has duplicates only within same directory")
                     }
                 } else {
-                    print("❌ No duplicate group found for \(file.fileName) with hash \(file.fileHash)")
                 }
             }
             
-            print("✨ Analysis complete. Found \(directoryCount.count) other directories, \(sameDirectoryDuplicates) same-dir duplicates")
             return (directoryCount, sameDirectoryDuplicates)
         }.value
         
         await MainActor.run {
-            print("📥 Updating UI with \(result.otherDirs.count) directories, \(result.sameDirCount) same-dir duplicates")
             self.otherDirectoriesWithSameFiles = result.otherDirs
             self.duplicatesInSameDirectory = result.sameDirCount
             self.isAnalyzing = false
@@ -642,7 +630,7 @@ struct DuplicateFileWithLocationsView: View {
                             .lineLimit(1)
                         
                         HStack {
-                            Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                            Text(DuplicateFormat.size(file.fileSize))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                             
@@ -718,6 +706,7 @@ struct DuplicateLocationRow: View {
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingDeleteAlert = false
+    @State private var canTrash = false
     
     private var fullPath: String {
         let rootDir = photoLibrary.rootDirectories.first(where: { $0.id == file.rootDirectoryId })
@@ -749,11 +738,15 @@ struct DuplicateLocationRow: View {
                 showingDeleteAlert = true
             } label: {
                 Image(systemName: "trash")
-                    .foregroundColor(.red)
+                    .foregroundColor(canTrash ? .red : .gray)
                     .font(.caption2)
             }
             .buttonStyle(PlainButtonStyle())
-            .help("Move this file to trash")
+            .disabled(!canTrash)
+            .help(canTrash ? "Move this file to trash" : "This is the only copy")
+        }
+        .task(id: photoLibrary.libraryVersion) {
+            canTrash = ((try? photoLibrary.databaseManager.copyCount(hash: file.fileHash)) ?? 0) > 1
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -763,7 +756,7 @@ struct DuplicateLocationRow: View {
         )
         .alert("Move Photo to Trash", isPresented: $showingDeleteAlert) {
             Button("Move to Trash", role: .destructive) {
-                photoLibrary.movePhotoToTrash(file)
+                photoLibrary.trashPhotos([file])
             }
             Button("Cancel", role: .cancel) { }
         } message: {
@@ -782,10 +775,10 @@ struct DirectoryDuplicateSummaryRow: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var isExpanded = false
     @State private var overlappingFiles: [(source: PhotoFile, target: PhotoFile)] = []
-    @State private var showingDeleteSourceConfirmation = false
-    @State private var showingDeleteTargetConfirmation = false
-    @State private var filesToDeleteInSheet: [PhotoFile] = []
-    @State private var otherLocationsInSheet: [PhotoFile] = []
+    @State private var showingDeletionSheet = false
+    /// Exactly the (delete, keep) rows the confirmation sheet shows and deletes.
+    @State private var deletionPairs: [(delete: PhotoFile, keep: PhotoFile)] = []
+    @State private var deletionDirectory = ""
     
     private var percentage: Double {
         guard totalDuplicatesInSource > 0 else { return 0 }
@@ -878,36 +871,7 @@ struct DirectoryDuplicateSummaryRow: View {
                         HStack(spacing: 12) {
                             // Delete from this directory (target)
                             Button {
-                                let logFile = FileManager.default.temporaryDirectory.appendingPathComponent("photomanager_debug.txt")
-                                var log = "=== DELETE TARGET BUTTON CLICKED ===\n"
-                                log += "Time: \(Date())\n"
-                                log += "Source: \(sourceDirectoryPath)\n"
-                                log += "Target: \(targetDirectoryPath)\n"
-                                log += "Shared file count: \(sharedFileCount)\n"
-                                
-                                if overlappingFiles.isEmpty {
-                                    log += "overlappingFiles is EMPTY, calling findOverlappingFiles()\n"
-                                    findOverlappingFiles()
-                                    log += "After findOverlappingFiles: \(overlappingFiles.count) items\n"
-                                } else {
-                                    log += "overlappingFiles already has \(overlappingFiles.count) items\n"
-                                }
-                                
-                                if overlappingFiles.isEmpty {
-                                    log += "ERROR: Still empty after findOverlappingFiles!\n"
-                                } else {
-                                    filesToDeleteInSheet = overlappingFiles.map { $0.target }
-                                    otherLocationsInSheet = overlappingFiles.map { $0.source }
-                                    log += "Captured \(filesToDeleteInSheet.count) files for sheet\n"
-                                    if !filesToDeleteInSheet.isEmpty {
-                                        log += "First file: \(filesToDeleteInSheet[0].fileName)\n"
-                                    }
-                                }
-                                
-                                try? log.write(to: logFile, atomically: true, encoding: .utf8)
-                                NSWorkspace.shared.activateFileViewerSelecting([logFile])
-                                
-                                showingDeleteTargetConfirmation = true
+                                prepareDeletion(fromTarget: true)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "trash.fill")
@@ -927,22 +891,7 @@ struct DirectoryDuplicateSummaryRow: View {
                             
                             // Delete from source directory
                             Button {
-                                if overlappingFiles.isEmpty {
-                                    print("⚠️ overlappingFiles is empty, finding files first")
-                                    findOverlappingFiles()
-                                } else {
-                                    print("✅ overlappingFiles already has \(overlappingFiles.count) items")
-                                }
-                                print("Opening delete source confirmation with \(overlappingFiles.count) files")
-                                if overlappingFiles.isEmpty {
-                                    print("❌ ERROR: Still empty after findOverlappingFiles!")
-                                } else {
-                                    // Capture the arrays NOW for the sheet
-                                    filesToDeleteInSheet = overlappingFiles.map { $0.source }
-                                    otherLocationsInSheet = overlappingFiles.map { $0.target }
-                                    print("📦 Captured \(filesToDeleteInSheet.count) files for sheet")
-                                }
-                                showingDeleteSourceConfirmation = true
+                                prepareDeletion(fromTarget: false)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "trash.fill")
@@ -988,50 +937,41 @@ struct DirectoryDuplicateSummaryRow: View {
                 .padding(.top, 4)
             }
         }
-        .sheet(isPresented: $showingDeleteTargetConfirmation) {
+        .sheet(isPresented: $showingDeletionSheet) {
             DuplicateDeletionConfirmationView(
-                filesToDelete: filesToDeleteInSheet,
-                otherLocations: otherLocationsInSheet,
-                directoryPath: targetDirectoryPath,
-                onConfirm: {
-                    deleteFilesFromTargetDirectory()
-                    showingDeleteTargetConfirmation = false
+                pairs: deletionPairs,
+                directoryPath: deletionDirectory,
+                onConfirm: { files in
+                    photoLibrary.trashPhotos(files)
+                    // The pairs are stale now; recompute on the next expansion.
+                    overlappingFiles = []
+                    deletionPairs = []
+                    isExpanded = false
+                    showingDeletionSheet = false
                 },
                 onCancel: {
-                    showingDeleteTargetConfirmation = false
-                },
-                selectedPhoto: $selectedPhoto
-            )
-            .environmentObject(photoLibrary)
-        }
-        .sheet(isPresented: $showingDeleteSourceConfirmation) {
-            DuplicateDeletionConfirmationView(
-                filesToDelete: filesToDeleteInSheet,
-                otherLocations: otherLocationsInSheet,
-                directoryPath: sourceDirectoryPath,
-                onConfirm: {
-                    deleteFilesFromSourceDirectory()
-                    showingDeleteSourceConfirmation = false
-                },
-                onCancel: {
-                    showingDeleteSourceConfirmation = false
+                    deletionPairs = []
+                    showingDeletionSheet = false
                 },
                 selectedPhoto: $selectedPhoto
             )
             .environmentObject(photoLibrary)
         }
     }
+
+    private func prepareDeletion(fromTarget: Bool) {
+        if overlappingFiles.isEmpty { findOverlappingFiles() }
+        guard !overlappingFiles.isEmpty else { return }
+        deletionPairs = overlappingFiles.map { fromTarget ? (delete: $0.target, keep: $0.source) : (delete: $0.source, keep: $0.target) }
+        deletionDirectory = fromTarget ? targetDirectoryPath : sourceDirectoryPath
+        showingDeletionSheet = true
+    }
     
     private func findOverlappingFiles() {
-        print("🔍 findOverlappingFiles called")
-        print("   Source: \(sourceDirectoryPath)")
-        print("   Target: \(targetDirectoryPath)")
-        print("   Shared file count: \(sharedFileCount)")
         
         var pairs: [(source: PhotoFile, target: PhotoFile)] = []
         
         // Find all duplicate groups and locate overlapping files
-        print("   Total duplicate groups: \(photoLibrary.duplicateGroups.count)")
         for group in photoLibrary.duplicateGroups {
             // Find files in target directory
             let filesInTarget = group.files.filter { file in
@@ -1053,28 +993,12 @@ struct DirectoryDuplicateSummaryRow: View {
             
             // If this file exists in both directories, add to pairs
             if let targetFile = filesInTarget.first, let sourceFile = filesInSource.first {
-                print("   ✅ Found pair: \(sourceFile.fileName) <-> \(targetFile.fileName)")
                 pairs.append((source: sourceFile, target: targetFile))
             } else if filesInTarget.count > 0 || filesInSource.count > 0 {
-                print("   ⚠️ Mismatch - Target: \(filesInTarget.count), Source: \(filesInSource.count) for hash \(String(group.fileHash.prefix(8)))")
             }
         }
         
-        print("   📊 Total pairs found: \(pairs.count)")
         overlappingFiles = pairs.sorted { $0.source.fileName < $1.source.fileName }
-        print("   ✨ overlappingFiles set to \(overlappingFiles.count) items")
-    }
-    
-    private func deleteFilesFromTargetDirectory() {
-        for pair in overlappingFiles {
-            photoLibrary.movePhotoToTrash(pair.target)
-        }
-    }
-    
-    private func deleteFilesFromSourceDirectory() {
-        for pair in overlappingFiles {
-            photoLibrary.movePhotoToTrash(pair.source)
-        }
     }
 }
 
@@ -1134,9 +1058,7 @@ struct OverlappingFileRow: View {
     }
     
     private func formatFileSize(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
+        DuplicateFormat.size(bytes)
     }
 }
 
@@ -1147,6 +1069,7 @@ struct SameDirectoryDuplicatesView: View {
     @State private var showingDeleteAllAlert = false
     @State private var showingDeleteSelectedAlert = false
     @State private var selectedFilesForDeletion: Set<Int64> = []  // Track selected file IDs
+    @State private var fileToTrash: PhotoFile?
     
     // Group files by hash to show duplicate sets
     private var duplicateGroups: [String: [PhotoFile]] {
@@ -1246,7 +1169,7 @@ struct SameDirectoryDuplicatesView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                             
-                            Text(ByteCountFormatter().string(fromByteCount: files[0].fileSize))
+                            Text(DuplicateFormat.size(files[0].fileSize))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -1296,7 +1219,7 @@ struct SameDirectoryDuplicatesView: View {
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                         
-                                        Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+                                        Text(DuplicateFormat.size(file.fileSize))
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                     }
@@ -1305,13 +1228,14 @@ struct SameDirectoryDuplicatesView: View {
                                 Spacer()
                                 
                                 Button {
-                                    photoLibrary.movePhotoToTrash(file)
+                                    fileToTrash = file  // confirmed below
                                 } label: {
                                     Image(systemName: "trash")
                                         .foregroundColor(.red)
                                         .font(.caption2)
                                 }
                                 .buttonStyle(PlainButtonStyle())
+                                .disabled(files.count < 2)
                                 .help("Move to trash")
                             }
                             .padding(.horizontal, 8)
@@ -1330,9 +1254,7 @@ struct SameDirectoryDuplicatesView: View {
         }
         .alert("Delete Same-Directory Duplicates", isPresented: $showingDeleteAllAlert) {
             Button("Keep First, Delete \(duplicatesToDelete.count) Others", role: .destructive) {
-                for file in duplicatesToDelete {
-                    photoLibrary.movePhotoToTrash(file)
-                }
+                photoLibrary.trashPhotos(duplicatesToDelete)
                 selectedFilesForDeletion.removeAll()
             }
             Button("Cancel", role: .cancel) { }
@@ -1341,14 +1263,21 @@ struct SameDirectoryDuplicatesView: View {
         }
         .alert("Delete Selected Files", isPresented: $showingDeleteSelectedAlert) {
             Button("Move \(selectedFiles.count) Files to Trash", role: .destructive) {
-                for file in selectedFiles {
-                    photoLibrary.movePhotoToTrash(file)
-                }
+                photoLibrary.trashPhotos(selectedFiles)  // keeps one copy of each photo
                 selectedFilesForDeletion.removeAll()
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Move \(selectedFiles.count) selected files to the Trash?\n\nYou can restore them from Trash if needed.")
+            Text("Move \(selectedFiles.count) selected files to the Trash?\n\nOne copy of every photo is always kept. You can restore files from the Trash if needed.")
+        }
+        .alert("Move Photo to Trash", isPresented: Binding(get: { fileToTrash != nil }, set: { if !$0 { fileToTrash = nil } })) {
+            Button("Move to Trash", role: .destructive) {
+                if let file = fileToTrash { photoLibrary.trashPhotos([file]) }
+                fileToTrash = nil
+            }
+            Button("Cancel", role: .cancel) { fileToTrash = nil }
+        } message: {
+            Text("Are you sure you want to move '\(fileToTrash?.fileName ?? "")' to the Trash?")
         }
     }
 }
@@ -1358,6 +1287,7 @@ struct CompactDuplicateFileRow: View {
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
     @State private var showingDeleteAlert = false
+    @State private var canTrash = false
     
     var body: some View {
         HStack(spacing: 6) {
@@ -1373,7 +1303,7 @@ struct CompactDuplicateFileRow: View {
             
             Spacer()
             
-            Text(ByteCountFormatter().string(fromByteCount: file.fileSize))
+            Text(DuplicateFormat.size(file.fileSize))
                 .font(.caption2)
                 .foregroundColor(.secondary)
             
@@ -1381,15 +1311,19 @@ struct CompactDuplicateFileRow: View {
                 showingDeleteAlert = true
             } label: {
                 Image(systemName: "trash")
-                    .foregroundColor(.red)
+                    .foregroundColor(canTrash ? .red : .gray)
                     .font(.caption2)
             }
             .buttonStyle(PlainButtonStyle())
+            .disabled(!canTrash)
         }
         .padding(.vertical, 2)
+        .task(id: photoLibrary.libraryVersion) {
+            canTrash = ((try? photoLibrary.databaseManager.copyCount(hash: file.fileHash)) ?? 0) > 1
+        }
         .alert("Move Photo to Trash", isPresented: $showingDeleteAlert) {
             Button("Move to Trash", role: .destructive) {
-                photoLibrary.movePhotoToTrash(file)
+                photoLibrary.trashPhotos([file])
             }
             Button("Cancel", role: .cancel) { }
         } message: {

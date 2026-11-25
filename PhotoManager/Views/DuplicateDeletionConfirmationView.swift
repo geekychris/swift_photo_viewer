@@ -1,13 +1,27 @@
 import SwiftUI
 
 struct DuplicateDeletionConfirmationView: View {
-    let filesToDelete: [PhotoFile]
-    let otherLocations: [PhotoFile]  // The files in the other directory
+    /// Each row: the file to delete and the identical copy that is kept. Exactly these are deleted.
+    let pairs: [(delete: PhotoFile, keep: PhotoFile)]
     let directoryPath: String
-    let onConfirm: () -> Void
+    /// Receives exactly the files shown in the "To Delete" column.
+    let onConfirm: ([PhotoFile]) -> Void
     let onCancel: () -> Void
     @Binding var selectedPhoto: PhotoFile?
     @EnvironmentObject var photoLibrary: PhotoLibrary
+
+    /// Rows whose kept copy is a different file with the same content (anything else is not shown or deleted).
+    private var validPairs: [(delete: PhotoFile, keep: PhotoFile)] {
+        pairs.filter { $0.delete != $0.keep && $0.delete.fileHash == $0.keep.fileHash }
+    }
+
+    private var filesToDelete: [PhotoFile] {
+        var seen: Set<Int64> = []
+        return validPairs.compactMap { pair in
+            guard let id = pair.delete.id, seen.insert(id).inserted else { return nil }
+            return pair.delete
+        }
+    }
     
     private var totalSize: Int64 {
         filesToDelete.reduce(0) { $0 + $1.fileSize }
@@ -30,21 +44,12 @@ struct DuplicateDeletionConfirmationView: View {
                         Text("You are about to move \(filesToDelete.count) duplicate files to the Trash")
                             .font(.body)
                         
-                        Text("Total size: \(ByteCountFormatter().string(fromByteCount: totalSize))")
+                        Text("Total size: \(DuplicateFormat.size(totalSize))")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        
-                        Text("Debug: \(filesToDelete.count) files to delete, \(otherLocations.count) other locations")
-                            .font(.caption2)
-                            .foregroundColor(filesToDelete.isEmpty ? .red : .secondary)
                     }
                 }
                 .padding(.top, 16)
-                .onAppear {
-                    print("DuplicateDeletionConfirmationView appeared")
-                    print("  Files to delete: \(filesToDelete.count)")
-                    print("  Other locations: \(otherLocations.count)")
-                }
             
             Divider()
             
@@ -99,7 +104,7 @@ struct DuplicateDeletionConfirmationView: View {
                                 Text("No files to display")
                                     .font(.headline)
                                 
-                                Text("This might be a bug. The directory claims to have duplicates, but the file list is empty.")
+                                Text("There are no files with an identical copy to keep.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .multilineTextAlignment(.center)
@@ -108,15 +113,13 @@ struct DuplicateDeletionConfirmationView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .padding(40)
                         } else {
-                            ForEach(Array(filesToDelete.enumerated()), id: \.element.id) { index, fileToDelete in
-                                if index < otherLocations.count {
-                                    DuplicateFileRowForDeletion(
-                                        fileToDelete: fileToDelete,
-                                        otherFile: otherLocations[index],
-                                        selectedPhoto: $selectedPhoto
-                                    )
-                                    .environmentObject(photoLibrary)
-                                }
+                            ForEach(Array(validPairs.enumerated()), id: \.offset) { _, pair in
+                                DuplicateFileRowForDeletion(
+                                    fileToDelete: pair.delete,
+                                    otherFile: pair.keep,
+                                    selectedPhoto: $selectedPhoto
+                                )
+                                .environmentObject(photoLibrary)
                             }
                         }
                     }
@@ -155,8 +158,9 @@ struct DuplicateDeletionConfirmationView: View {
                     .keyboardShortcut(.cancelAction)
                     
                     Button("Move \(filesToDelete.count) Files to Trash") {
-                        onConfirm()
+                        onConfirm(filesToDelete)
                     }
+                    .disabled(filesToDelete.isEmpty)
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .keyboardShortcut(.defaultAction)
@@ -211,7 +215,7 @@ struct DuplicateFileRowForDeletion: View {
             .frame(width: 200, alignment: .leading)
             
             // Size
-            Text(ByteCountFormatter().string(fromByteCount: fileToDelete.fileSize))
+            Text(DuplicateFormat.size(fileToDelete.fileSize))
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .frame(width: 80, alignment: .leading)

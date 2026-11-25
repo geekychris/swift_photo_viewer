@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+import os.log
+
+private let logger = Logger(subsystem: "com.photomarger", category: "openwith")
 
 struct OpenWithPickerView: View {
     let photoPath: String
@@ -135,55 +138,46 @@ struct OpenWithPickerView: View {
     }
     
     private func startAccessingSecurityScope() {
-        // Find the photo's root directory to get bookmark data
-        let fileURL = URL(fileURLWithPath: photoPath)
-        let parentPath = fileURL.deletingLastPathComponent().path
-        
-        // Try to find a root directory that matches
-        for rootDir in photoLibrary.rootDirectories {
-            if parentPath.hasPrefix(rootDir.path), let bookmarkData = rootDir.bookmarkData {
-                do {
-                    var isStale = false
-                    let url = try URL(resolvingBookmarkData: bookmarkData,
-                                     options: [.withSecurityScope],
-                                     relativeTo: nil,
-                                     bookmarkDataIsStale: &isStale)
-                    
-                    isAccessingSecurityScope = url.startAccessingSecurityScopedResource()
-                    securityScopedURL = url
-                    print("🔓 Started security-scoped access for Open With: \(isAccessingSecurityScope)")
-                    break
-                } catch {
-                    print("⚠️ Failed to resolve bookmark: \(error.localizedDescription)")
-                }
-            }
+        // Find the root directory containing the photo to get its bookmark
+        let parentPath = URL(fileURLWithPath: photoPath).deletingLastPathComponent().path
+        let root = photoLibrary.rootDirectories
+            .filter { parentPath == $0.path || parentPath.hasPrefix($0.path + "/") }
+            .max { $0.path.count < $1.path.count }
+        guard let bookmarkData = root?.bookmarkData else { return }
+        do {
+            var isStale = false
+            let url = try URL(resolvingBookmarkData: bookmarkData,
+                              options: [.withSecurityScope],
+                              relativeTo: nil,
+                              bookmarkDataIsStale: &isStale)
+            isAccessingSecurityScope = url.startAccessingSecurityScopedResource()
+            securityScopedURL = url
+        } catch {
+            logger.error("Failed to resolve bookmark: \(error.localizedDescription, privacy: .public)")
         }
     }
     
     private func stopAccessingSecurityScope() {
         if isAccessingSecurityScope {
             securityScopedURL?.stopAccessingSecurityScopedResource()
-            print("🔒 Stopped security-scoped access")
+            isAccessingSecurityScope = false
         }
     }
     
     private func loadAvailableApps() {
+        let path = photoPath
         Task {
-            let fileURL = URL(fileURLWithPath: photoPath)
-            
-            // Get all applications that can open this file type
-            let apps = NSWorkspace.shared.urlsForApplications(toOpen: fileURL)
-            
-            let appInfos = apps.compactMap { appURL -> AppInfo? in
-                let name = appURL.deletingPathExtension().lastPathComponent
-                let icon = NSWorkspace.shared.icon(forFile: appURL.path)
-                return AppInfo(name: name, path: appURL.path, icon: icon)
-            }
-            
-            await MainActor.run {
-                self.availableApps = appInfos.sorted { $0.name < $1.name }
-                self.isLoading = false
-            }
+            // Launch Services lookups and icon loading can be slow; keep them off the main thread.
+            let appInfos = await Task.detached(priority: .userInitiated) { () -> [AppInfo] in
+                let apps = NSWorkspace.shared.urlsForApplications(toOpen: URL(fileURLWithPath: path))
+                return apps.map { appURL in
+                    AppInfo(name: appURL.deletingPathExtension().lastPathComponent,
+                            path: appURL.path,
+                            icon: NSWorkspace.shared.icon(forFile: appURL.path))
+                }
+            }.value
+            availableApps = appInfos.sorted { $0.name < $1.name }
+            isLoading = false
         }
     }
     

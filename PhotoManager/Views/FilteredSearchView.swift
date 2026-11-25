@@ -20,8 +20,14 @@ struct FilteredSearchView: View {
     @Binding var selectedPhoto: PhotoFile?
     
     @EnvironmentObject var photoLibrary: PhotoLibrary
+    @StateObject private var actions = PhotoActionCenter()
     @State private var filteredPhotos: [PhotoFile] = []
+    /// Matching photos in total; nil when only a lower bound is known (in-memory filters hit the limit).
+    @State private var totalCount: Int?
+    @State private var isSearching = false
     @State private var thumbnailSize: CGFloat = 200
+
+    private static let resultLimit = 5000
     
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: thumbnailSize, maximum: thumbnailSize + 100), spacing: 16)]
@@ -31,7 +37,7 @@ struct FilteredSearchView: View {
         if let directoryId = filterDirectoryId {
             if let directory = photoLibrary.rootDirectories.first(where: { $0.id == directoryId }) {
                 if let subdir = filterSubdirectoryPath {
-                    return "📁 \(directory.name) › \(subdir)"
+                    return "📁 \(directory.name) › \(subdir.isEmpty ? "Files in top folder" : subdir)"
                 } else {
                     return "📁 \(directory.name)"
                 }
@@ -74,7 +80,10 @@ struct FilteredSearchView: View {
                     
                     Spacer()
                     
-                    Text("\(filteredPhotos.count) photos found")
+                    if isSearching {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(resultCountText)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -112,7 +121,7 @@ struct FilteredSearchView: View {
             Divider()
             
             // Results grid
-            if filteredPhotos.isEmpty {
+            if filteredPhotos.isEmpty && !isSearching {
                 VStack(spacing: 16) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 64))
@@ -144,225 +153,140 @@ struct FilteredSearchView: View {
                 }
             }
         }
-        .onAppear {
-            performFilteredSearch()
+        .photoActions(actions)
+        .task(id: query) {
+            // Debounce typing; a newer query cancels this task.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await performFilteredSearch(query)
         }
-        .onChange(of: searchText) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: startDate) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: endDate) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: camera) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: minAperture) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: maxAperture) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: minISO) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: maxISO) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: minRating) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: selectedColors) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: filterDirectoryId) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: filterSubdirectoryPath) { _, _ in
-            performFilteredSearch()
-        }
-        .onChange(of: filterTimelinePeriod) { _, _ in
-            performFilteredSearch()
+        .onChange(of: photoLibrary.libraryVersion) {
+            Task { await performFilteredSearch(query) }
         }
     }
-    
-    private func performFilteredSearch() {
-        logger.info("Performing filtered search")
-        
-        // Start with context-scoped photos
-        var results: [PhotoFile] = []
-        
-        // Determine initial photo set based on context (directory, timeline, or all)
+
+    private var resultCountText: String {
+        let shown = filteredPhotos.count
+        guard let total = totalCount else { return "Showing first \(shown) matches" }
+        if total > shown { return "Showing \(shown) of \(total) photos" }
+        return "\(total) photos found"
+    }
+
+    // MARK: - Query
+
+    /// Everything that affects the results, so one change triggers one (debounced) search.
+    private struct SearchQuery: Equatable {
+        var filter: PhotoFilter
+        var camera: String
+        var minAperture: Double?
+        var maxAperture: Double?
+        var minISO: Int?
+        var maxISO: Int?
+    }
+
+    private var query: SearchQuery {
+        var filter = PhotoFilter()
         if let directoryId = filterDirectoryId {
-            // Directory view context
-            var directoryPhotos = photoLibrary.getPhotosForDirectory(directoryId)
-            
-            // Apply subdirectory filter if specified
+            filter.rootDirectoryId = directoryId
             if let subdir = filterSubdirectoryPath {
-                directoryPhotos = directoryPhotos.filter { photo in
-                    let pathComponents = photo.relativePath.split(separator: "/")
-                    if pathComponents.count > 1 {
-                        let firstComponent = String(pathComponents[0])
-                        return firstComponent == subdir
-                    } else {
-                        return subdir == "Root"
-                    }
-                }
-                logger.info("Scoped to subdirectory '\(subdir)': \(directoryPhotos.count) photos")
+                filter.directoryPath = subdir
+                // "" is the files directly in the root; other folders include their subfolders.
+                filter.includeSubdirectories = !subdir.isEmpty
             }
-            
-            results = directoryPhotos
-            logger.info("Scoped to directory \(directoryId): \(results.count) photos")
-        } else if let timelinePeriod = filterTimelinePeriod {
-            // Timeline view context
-            for directory in photoLibrary.rootDirectories {
-                if let directoryId = directory.id {
-                    results.append(contentsOf: photoLibrary.getPhotosForDirectory(directoryId))
-                }
-            }
-            
-            // Filter by timeline period
-            results = results.filter { photo in
-                let photoDate = photo.exifDateTaken ?? photo.createdAt
-                let formatter = DateFormatter()
-                
-                // Determine period format based on pattern
-                if timelinePeriod.contains("W") {
-                    // Weekly format: "yyyy-Www"
-                    formatter.dateFormat = "yyyy"
-                    let calendar = Calendar.current
-                    let year = formatter.string(from: photoDate)
-                    let weekOfYear = calendar.component(.weekOfYear, from: photoDate)
-                    let photoWeek = String(format: "%@-W%02d", year, weekOfYear)
-                    return photoWeek == timelinePeriod
-                } else if timelinePeriod.count == 10 {
-                    // Daily format: "yyyy-MM-dd"
-                    formatter.dateFormat = "yyyy-MM-dd"
-                    return formatter.string(from: photoDate) == timelinePeriod
-                } else {
-                    // Monthly format: "yyyy-MM"
-                    formatter.dateFormat = "yyyy-MM"
-                    return formatter.string(from: photoDate) == timelinePeriod
-                }
-            }
-            logger.info("Scoped to timeline period '\(timelinePeriod)': \(results.count) photos")
-        } else {
-            // No specific context - search all photos
-            for directory in photoLibrary.rootDirectories {
-                if let directoryId = directory.id {
-                    results.append(contentsOf: photoLibrary.getPhotosForDirectory(directoryId))
-                }
-            }
-            logger.info("No scope filter - loaded all \(results.count) photos")
+        } else if let period = filterTimelinePeriod {
+            let periodFilter = PhotoFilter.forPeriod(period)
+            filter.captureFrom = periodFilter.captureFrom
+            filter.captureTo = periodFilter.captureTo
+            filter.capturePrefix = periodFilter.capturePrefix
         }
-        
-        // Now apply text search filter if provided
-        if !searchText.isEmpty {
-            results = results.filter { photo in
-                // Search in filename, description, and tags
-                let filename = photo.fileName.lowercased()
-                let description = (photo.userDescription ?? "").lowercased()
-                let tags = (photo.userTags ?? "").lowercased()
-                let searchLower = searchText.lowercased()
-                
-                return filename.contains(searchLower) ||
-                       description.contains(searchLower) ||
-                       tags.contains(searchLower)
-            }
-            logger.info("After text search: \(results.count) photos")
-        }
-        
-        // Apply date filter
+        let text = searchText.trimmingCharacters(in: .whitespaces)
+        filter.text = text.isEmpty ? nil : text
+        filter.minRating = minRating > 0 ? minRating : nil
+        filter.colorTags = selectedColors
+
+        let calendar = Calendar.current
         if let start = startDate {
-            let calendar = Calendar.current
-            let startOfDay = calendar.startOfDay(for: start)
-            results = results.filter { photo in
-                let photoDate = photo.exifDateTaken ?? photo.createdAt
-                return photoDate >= startOfDay
+            let from = calendar.startOfDay(for: start)
+            filter.captureFrom = max(filter.captureFrom ?? from, from)
+        }
+        if let end = endDate, let to = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: end)) {
+            filter.captureTo = min(filter.captureTo ?? to, to)
+        }
+        return SearchQuery(filter: filter, camera: camera.trimmingCharacters(in: .whitespaces),
+                           minAperture: minAperture, maxAperture: maxAperture, minISO: minISO, maxISO: maxISO)
+    }
+
+    private func performFilteredSearch(_ query: SearchQuery) async {
+        isSearching = true
+        let db = photoLibrary.databaseManager
+        let limit = Self.resultLimit
+        let (photos, total) = await Task.detached(priority: .userInitiated) { () -> ([PhotoFile], Int?) in
+            do {
+                return try Self.run(query, db: db, limit: limit)
+            } catch {
+                logger.error("Search failed: \(error.localizedDescription, privacy: .public)")
+                return ([], 0)
             }
-            logger.info("After start date filter (\(start)): \(results.count) photos")
+        }.value
+        guard query == self.query else { return } // a newer search is under way
+        filteredPhotos = photos
+        totalCount = total
+        isSearching = false
+    }
+
+    /// Runs the search in SQL. Camera substring, aperture and ISO ranges are applied in memory,
+    /// scanning pages until `limit` matches are found.
+    private static func run(_ query: SearchQuery, db: DatabaseManager, limit: Int) throws -> ([PhotoFile], Int?) {
+        var filter = query.filter
+        var cameraNeedle: String?
+        if !query.camera.isEmpty {
+            // Narrow to the camera models containing the text; one model can be matched in SQL.
+            let models = try db.pivot(.camera, filter: filter)
+                .map(\.key)
+                .filter { !$0.isEmpty && $0.localizedCaseInsensitiveContains(query.camera) }
+            if models.isEmpty { return ([], 0) }
+            if models.count == 1 { filter.cameraModel = models[0] } else { cameraNeedle = query.camera }
         }
-        
-        if let end = endDate {
-            let calendar = Calendar.current
-            // End of the selected day (23:59:59)
-            let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: end) ?? end
-            results = results.filter { photo in
-                let photoDate = photo.exifDateTaken ?? photo.createdAt
-                return photoDate <= endOfDay
+
+        let inMemory: ((PhotoFile) -> Bool)?
+        if cameraNeedle != nil || query.minAperture != nil || query.maxAperture != nil || query.minISO != nil || query.maxISO != nil {
+            inMemory = { photo in
+                if let needle = cameraNeedle {
+                    guard let model = photo.exifCameraModel, model.localizedCaseInsensitiveContains(needle) else { return false }
+                }
+                if query.minAperture != nil || query.maxAperture != nil {
+                    guard let aperture = photo.exifAperture else { return false }
+                    if let minAp = query.minAperture, aperture < minAp { return false }
+                    if let maxAp = query.maxAperture, aperture > maxAp { return false }
+                }
+                if query.minISO != nil || query.maxISO != nil {
+                    guard let iso = photo.exifIso else { return false }
+                    if let minIso = query.minISO, iso < minIso { return false }
+                    if let maxIso = query.maxISO, iso > maxIso { return false }
+                }
+                return true
             }
-            logger.info("After end date filter (\(end)): \(results.count) photos")
+        } else {
+            inMemory = nil
         }
-        
-        // Apply camera filter
-        if !camera.isEmpty {
-            results = results.filter { photo in
-                guard let cameraModel = photo.exifCameraModel else { return false }
-                return cameraModel.localizedCaseInsensitiveContains(camera)
+
+        guard let predicate = inMemory else {
+            let total = try db.countPhotos(matching: filter).count
+            let photos = try db.photos(matching: filter, sort: .captureDescending, limit: limit)
+            return (photos, total)
+        }
+
+        var matches: [PhotoFile] = []
+        var offset = 0
+        let batch = 2000
+        while true {
+            let page = try db.photos(matching: filter, sort: .captureDescending, limit: batch, offset: offset)
+            for photo in page where predicate(photo) {
+                matches.append(photo)
+                if matches.count >= limit { return (matches, nil) }
             }
-            logger.info("After camera filter: \(results.count) photos")
+            if page.count < batch { return (matches, matches.count) }
+            offset += batch
         }
-        
-        // Apply aperture filter
-        if let minAp = minAperture {
-            results = results.filter { photo in
-                guard let aperture = photo.exifAperture else { return false }
-                return aperture >= minAp
-            }
-            logger.info("After min aperture filter: \(results.count) photos")
-        }
-        
-        if let maxAp = maxAperture {
-            results = results.filter { photo in
-                guard let aperture = photo.exifAperture else { return false }
-                return aperture <= maxAp
-            }
-            logger.info("After max aperture filter: \(results.count) photos")
-        }
-        
-        // Apply ISO filter
-        if let minIso = minISO {
-            results = results.filter { photo in
-                guard let iso = photo.exifIso else { return false }
-                return iso >= minIso
-            }
-            logger.info("After min ISO filter: \(results.count) photos")
-        }
-        
-        if let maxIso = maxISO {
-            results = results.filter { photo in
-                guard let iso = photo.exifIso else { return false }
-                return iso <= maxIso
-            }
-            logger.info("After max ISO filter: \(results.count) photos")
-        }
-        
-        // Apply rating filter (at least minRating)
-        if minRating > 0 {
-            results = results.filter { photo in
-                photo.rating >= minRating
-            }
-            logger.info("After rating filter: \(results.count) photos")
-        }
-        
-        // Apply color filter (any of selected colors)
-        if !selectedColors.isEmpty {
-            results = results.filter { photo in
-                guard let colorTag = photo.colorTag else { return false }
-                return selectedColors.contains(colorTag)
-            }
-            logger.info("After color filter: \(results.count) photos")
-        }
-        
-        // Sort by date
-        filteredPhotos = results.sorted { photo1, photo2 in
-            let date1 = photo1.exifDateTaken ?? photo1.createdAt
-            let date2 = photo2.exifDateTaken ?? photo2.createdAt
-            return date1 > date2
-        }
-        
-        logger.info("Final filtered results: \(filteredPhotos.count) photos")
     }
 }

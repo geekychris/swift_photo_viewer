@@ -78,8 +78,8 @@ struct PhotoFile: Identifiable, Hashable {
     var colorTag: String? // Color tag: red, orange, yellow, green, blue, purple, gray
 
     // Added in schema v2
-    /// Best known capture time as wall-clock time stored as if it were UTC ("floating" time),
-    /// so photos from a camera set to home time and a phone abroad sort the way they were shot.
+    /// Best known capture time: EXIF wall-clock time read in the current time zone (EXIF has no zone),
+    /// so it displays as shot; video dates keep their local wall-clock time the same way.
     var captureDate: Date = Date(timeIntervalSince1970: 0)
     var dateSource: DateSource = .file
     var mediaKind: MediaKind = .image

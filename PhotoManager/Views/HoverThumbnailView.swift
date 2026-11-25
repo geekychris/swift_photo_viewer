@@ -19,7 +19,7 @@ struct ReusableHoverThumbnail: View {
             photoLibrary: photoLibrary,
             onTap: onTap
         )
-        .task(id: photo.thumbnailPath) {
+        .task(id: "\(photo.thumbnailPath ?? "")-\(photoLibrary.thumbnailsUpdated.timeIntervalSince1970)") {
             thumbnailImage = await ThumbnailCache.shared.image(for: photo)
         }
     }

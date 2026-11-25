@@ -1,7 +1,11 @@
 import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: "com.photomarger", category: "content")
 
 struct ContentView: View {
     @EnvironmentObject var photoLibrary: PhotoLibrary
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedTab = 0
     @State private var showingDirectoryPicker = false
     @State private var selectedPhoto: PhotoFile?
@@ -45,10 +49,23 @@ struct ContentView: View {
                         .fontWeight(.bold)
                     Spacer()
                     Button {
+                        openWindow(id: "organise")
+                    } label: {
+                        Image(systemName: "wand.and.stars")
+                    }
+                    .help("Organise library")
+                    Button {
+                        openWindow(id: "insights")
+                    } label: {
+                        Image(systemName: "chart.bar.xaxis")
+                    }
+                    .help("Library insights")
+                    Button {
                         showingDirectoryPicker = true
                     } label: {
                         Image(systemName: "plus")
                     }
+                    .help("Add a folder to the library")
                 }
                 .padding()
                 
@@ -76,7 +93,6 @@ struct ContentView: View {
                         TextField("Search photos...", text: $searchText)
                             .textFieldStyle(.roundedBorder)
                             .onChange(of: searchText) {
-                                print("🔍 Search text changed: \(searchText)")
                                 updateSearchState()
                             }
                         
@@ -91,7 +107,6 @@ struct ContentView: View {
                         }
                         
                         Button {
-                            print("🎛 Filter button tapped, showing: \(showingFilters)")
                             showingFilters.toggle()
                         } label: {
                             Image(systemName: showingFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
@@ -352,11 +367,11 @@ struct ContentView: View {
                 
                 // Status
                 if photoLibrary.isLoading {
-                    HStack {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Scanning...")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(photoLibrary.scanStatus.isEmpty ? "Scanning..." : photoLibrary.scanStatus)
                             .font(.caption)
+                            .lineLimit(2)
+                        ProgressView(value: min(max(photoLibrary.scanProgress, 0), 1))
                     }
                     .padding()
                 }
@@ -383,16 +398,18 @@ struct ContentView: View {
                     maxISO: maxISO,
                     minRating: minRating,
                     selectedColors: selectedColors,
-                    filterDirectoryId: selectedDirectoryId,
-                    filterSubdirectoryPath: selectedSubdirectoryPath,
-                    filterTimelinePeriod: selectedTimelinePeriod,
+                    filterDirectoryId: selectedTab == 1 ? nil : selectedDirectoryId,
+                    filterSubdirectoryPath: selectedTab == 1 ? nil : selectedSubdirectoryPath,
+                    filterTimelinePeriod: selectedTab == 1 ? selectedTimelinePeriod : nil,
                     selectedPhoto: $selectedPhoto
                 )
             } else {
+                // The timeline tab filters by period; the other tabs by the selected folder.
                 PhotoGridView(
                     selectedPhoto: $selectedPhoto,
-                    filterDirectoryId: selectedDirectoryId,
-                    filterSubdirectoryPath: selectedSubdirectoryPath
+                    filterDirectoryId: selectedTab == 1 ? nil : selectedDirectoryId,
+                    filterSubdirectoryPath: selectedTab == 1 ? nil : selectedSubdirectoryPath,
+                    filterPeriod: selectedTab == 1 ? selectedTimelinePeriod : nil
                 )
             }
         }
@@ -409,43 +426,31 @@ struct ContentView: View {
     }
     
     private func handleDirectorySelection(_ result: Result<[URL], Error>) {
-        NSLog("📁 ContentView: handleDirectorySelection called")
         switch result {
         case .success(let urls):
-            NSLog("✅ ContentView: Successfully got URLs: %ld items", urls.count)
-            if let url = urls.first {
-                // Start accessing security-scoped resource
-                guard url.startAccessingSecurityScopedResource() else {
-                    photoLibrary.errorMessage = "Failed to access directory. Please try again."
-                    NSLog("❌ ContentView: Failed to start accessing security-scoped resource")
-                    return
-                }
-                
-                // Store bookmark data for future access
-                var bookmarkData: Data? = nil
-                do {
-                    bookmarkData = try url.bookmarkData(options: [.withSecurityScope],
-                                                       includingResourceValuesForKeys: nil,
-                                                       relativeTo: nil)
-                    NSLog("✅ ContentView: Created security-scoped bookmark")
-                } catch {
-                    NSLog("⚠️ ContentView: Failed to create bookmark: %@", error.localizedDescription)
-                }
-                
-                let path = url.path
-                let name = url.lastPathComponent
-                NSLog("📂 ContentView: Selected directory - Path: %@, Name: %@", path, name)
-                photoLibrary.addRootDirectory(path: path, name: name, bookmarkData: bookmarkData)
-                NSLog("📂 ContentView: Called photoLibrary.addRootDirectory")
-                
-                // Don't stop accessing - we need it for scanning
-                // url.stopAccessingSecurityScopedResource()
-            } else {
-                NSLog("❌ ContentView: No URL in the success result")
+            guard let url = urls.first else { return }
+            // Start accessing security-scoped resource
+            guard url.startAccessingSecurityScopedResource() else {
+                photoLibrary.errorMessage = "Failed to access directory. Please try again."
+                logger.error("Failed to start accessing security-scoped resource for \(url.path, privacy: .public)")
+                return
             }
+            
+            // Store bookmark data for future access
+            var bookmarkData: Data? = nil
+            do {
+                bookmarkData = try url.bookmarkData(options: [.withSecurityScope],
+                                                   includingResourceValuesForKeys: nil,
+                                                   relativeTo: nil)
+            } catch {
+                logger.error("Failed to create bookmark: \(error.localizedDescription, privacy: .public)")
+            }
+            
+            photoLibrary.addRootDirectory(path: url.path, name: url.lastPathComponent, bookmarkData: bookmarkData)
+            // Don't stop accessing - we need it for scanning
         case .failure(let error):
             let errorMsg = "Failed to select directory: \(error.localizedDescription)"
-            NSLog("❌ ContentView: \(errorMsg)")
+            logger.error("\(errorMsg, privacy: .public)")
             photoLibrary.errorMessage = errorMsg
         }
     }
