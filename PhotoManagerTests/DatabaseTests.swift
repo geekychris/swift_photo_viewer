@@ -141,6 +141,30 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(try db.countPhotos(matching: f).count, 4)
     }
 
+    func testDrillDownMatchesPivotCells() throws {
+        let root = try addRoot()
+        let t = FileScanningService.parseExifDate("2019:03:12 10:00:00")!
+        try db.upsert((1...6).map { Self.scanned(root, "x/\($0).jpg", hash: "h\($0)", date: t.addingTimeInterval(Double($0) * 86400),
+                                                  camera: $0 % 2 == 0 ? "Canon EOS R5" : "Apple iPhone") })
+        let ids = try db.photoIds(matching: .all)
+        let trip = try db.createEvent(name: "Trip", parentId: nil)
+        let city = try db.createEvent(name: "City", parentId: trip)
+        try db.assignPhotos(Array(ids.prefix(3)), toEvent: city)
+        let alice = try db.tagId(named: "Alice", kind: .person)
+        try db.addTag(alice, to: Array(ids.suffix(2)))
+        
+        for (dim, dim2) in [(PivotDimension.topEvent, PivotDimension.camera), (.person, .month), (.weekday, .camera), (.directory, .day)] {
+            for cell in try db.pivot(dim, by: dim2) {
+                var f = PhotoFilter()
+                f.dimensionKeys = [DimensionKey(dimension: dim, key: cell.key), DimensionKey(dimension: dim2, key: cell.key2 ?? "")]
+                XCTAssertEqual(try db.countPhotos(matching: f).count, cell.count, "\(dim) \(cell.key) × \(dim2) \(cell.key2 ?? "")")
+            }
+        }
+        var f = PhotoFilter()
+        f.dimensionKeys = [DimensionKey(dimension: .topEvent, key: String(trip))]
+        XCTAssertEqual(try db.countPhotos(matching: f).count, 3)
+    }
+    
     func testDeletingRootCascades() throws {
         let root = try addRoot()
         try db.upsert([Self.scanned(root, "a.jpg", hash: "1")])

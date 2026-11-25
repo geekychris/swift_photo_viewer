@@ -188,4 +188,17 @@ final class OrganizeEngineTests: XCTestCase {
             XCTAssertEqual(sql.first?.first ?? nil, GeoService.cellKey(latitude: lat, longitude: lon), "\(lat),\(lon)")
         }
     }
+
+    func testXMPSidecarContents() {
+        var labels = XMPSidecarWriter.Labels()
+        labels.eventPath = ["Asia Trip", "Hong Kong", "Temples & Shrines"]
+        labels.people = ["Alice"]
+        labels.rating = 4
+        let xml = XMPSidecarWriter.xml(labels)
+        XCTAssertTrue(xml.contains("<rdf:li>Asia Trip|Hong Kong|Temples &amp; Shrines</rdf:li>"))
+        XCTAssertTrue(xml.contains("<rdf:li>Asia Trip|Hong Kong</rdf:li>"))
+        XCTAssertTrue(xml.contains("<rdf:li>People|Alice</rdf:li>"))
+        XCTAssertTrue(xml.contains("xmp:Rating=\"4\""))
+        XCTAssertNotNil(try? XMLDocument(xmlString: xml), "sidecar must be well-formed XML")
+    }
 }

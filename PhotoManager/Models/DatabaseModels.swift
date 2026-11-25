@@ -226,8 +226,20 @@ struct PhotoFilter: Equatable {
     var duplicatesOnly = false
     var dateSources: Set<DateSource> = []
     var photoIds: [Int64]?                // explicit set (e.g. a cluster)
-
+    /// Drill-down from analytics: the photo's value for each dimension must equal the key.
+    var dimensionKeys: [DimensionKey] = []
+    var geoBox: GeoBox?
+    
     static let all = PhotoFilter()
+}
+
+struct DimensionKey: Equatable, Hashable, Codable {
+    let dimension: PivotDimension
+    let key: String
+}
+
+struct GeoBox: Equatable, Hashable, Codable {
+    let minLat: Double, maxLat: Double, minLon: Double, maxLon: Double
 }
 
 enum PhotoSort: String, CaseIterable {

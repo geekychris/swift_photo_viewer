@@ -49,6 +49,8 @@ final class OrganizeSession: ObservableObject {
     @Published var planId: Int64?
     @Published var outcome: PlanExecutor.Outcome?
     @Published var executorProgress = PlanExecutor.Progress()
+    @Published var writeSidecars = true
+    @Published var sidecarSummary: String?
 
     private var workTask: Task<Void, Never>?
 
@@ -289,6 +291,14 @@ final class OrganizeSession: ObservableObject {
                 }
                 outcome = result
                 status = "Copied \(result.verified) files" + (result.failed.isEmpty ? "" : ", \(result.failed.count) failed")
+                if writeSidecars {
+                    let sidecars = await Task.detached { try? XMPSidecarWriter.writeSidecars(planId: planId, target: target, db: db) }.value
+                    if let sidecars {
+                        sidecarSummary = "Wrote \(sidecars.written) XMP sidecars" +
+                            (sidecars.skippedForeign > 0 ? "; left \(sidecars.skippedForeign) existing sidecars from other apps untouched" : "") +
+                            (sidecars.failed > 0 ? "; \(sidecars.failed) failed" : "")
+                    }
+                }
             } catch {
                 status = "Copy stopped: \(error.localizedDescription)"
             }
@@ -1128,6 +1138,7 @@ private struct PlanStepView: View {
                     .frame(minWidth: 300)
                 }
                 HStack {
+                    Toggle("Write XMP sidecars with events, people, keywords and ratings (for Lightroom, Bridge, Photos)", isOn: $session.writeSidecars)
                     Spacer()
                     Button("Copy \(session.planSummary.copyFiles) files…") { session.saveAndRunPlan() }
                         .buttonStyle(.borderedProminent)
@@ -1183,6 +1194,9 @@ private struct CopyStepView: View {
                                 Text("\(failure.0): \(failure.1)").font(.caption).lineLimit(2)
                             }
                             Button("Resume") { session.runPlan() }
+                        }
+                        if let sidecars = session.sidecarSummary {
+                            Label(sidecars, systemImage: "tag").font(.callout)
                         }
                         if let manifest = outcome.manifestPath {
                             HStack {

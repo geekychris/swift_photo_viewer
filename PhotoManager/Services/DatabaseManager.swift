@@ -49,7 +49,7 @@ struct PivotRow: Identifiable, Hashable {
 }
 
 /// Dimensions the analytics view can group by. Each maps to a SQL expression over photo_files `p`.
-enum PivotDimension: String, CaseIterable, Identifiable {
+enum PivotDimension: String, CaseIterable, Identifiable, Codable {
     case year, month, day, week, weekday, hour
     case event, topEvent, person, keyword
     case country, city
@@ -532,6 +532,15 @@ class DatabaseManager: ObservableObject {
         if filter.duplicatesOnly {
             clauses.append("p.file_hash IN (SELECT file_hash FROM photo_files GROUP BY file_hash HAVING COUNT(*) > 1)")
         }
+        for dk in filter.dimensionKeys {
+            let (expr, join) = dimensionSQL(dk.dimension)
+            clauses.append("p.id IN (SELECT p.id FROM photo_files p \(join) WHERE \(expr) = ?)")
+            bindings.append(dk.key)
+        }
+        if let box = filter.geoBox {
+            clauses.append("p.gps_lat BETWEEN ? AND ? AND p.gps_lon BETWEEN ? AND ?")
+            bindings.append(contentsOf: [box.minLat, box.maxLat, box.minLon, box.maxLon] as [Binding?])
+        }
         if let ids = filter.photoIds {
             clauses.append("p.id IN (SELECT value FROM json_each(?))")
             bindings.append(jsonArray(ids))
@@ -644,6 +653,22 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    /// GPS photos aggregated on a grid of `cellDegrees`, for the map.
+    func gpsClusters(filter: PhotoFilter, cellDegrees: Double) throws -> [(lat: Double, lon: Double, count: Int, box: GeoBox, samplePhotoId: Int64)] {
+        let (whereSQL, bindings) = Self.whereClause(for: filter)
+        let sql = """
+            SELECT AVG(p.gps_lat), AVG(p.gps_lon), COUNT(*), MIN(p.gps_lat), MAX(p.gps_lat), MIN(p.gps_lon), MAX(p.gps_lon), MAX(p.id)
+            FROM photo_files p
+            WHERE p.gps_lat IS NOT NULL AND \(whereSQL)
+            GROUP BY CAST((p.gps_lat + 90) / ? AS INTEGER), CAST((p.gps_lon + 180) / ? AS INTEGER)
+            LIMIT 5000
+            """
+        return try conn().prepare(sql).bind(bindings + [cellDegrees, cellDegrees]).map { r in
+            let d = { (i: Int) in r[i] as? Double ?? 0 }
+            return (d(0), d(1), Int(r[2] as? Int64 ?? 0), GeoBox(minLat: d(3), maxLat: d(4), minLon: d(5), maxLon: d(6)), r[7] as? Int64 ?? 0)
+        }
+    }
+    
     /// Photo counts per directory of one root (for the directory sidebar).
     func directoryCounts(rootId: Int64) throws -> [(path: String, count: Int)] {
         try conn().prepare("SELECT dir_path, COUNT(*) FROM photo_files WHERE root_directory_id = ? GROUP BY dir_path ORDER BY dir_path", rootId)
