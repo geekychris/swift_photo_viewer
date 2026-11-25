@@ -19,8 +19,8 @@ struct ReusableHoverThumbnail: View {
             photoLibrary: photoLibrary,
             onTap: onTap
         )
-        .onAppear {
-            thumbnailImage = photoLibrary.getThumbnailImage(for: photo)
+        .task(id: photo.thumbnailPath) {
+            thumbnailImage = await ThumbnailCache.shared.image(for: photo)
         }
     }
 }
@@ -54,7 +54,7 @@ struct ThumbnailWithHoverWrapper: NSViewRepresentable {
 
 class AppKitHoverThumbnailView: NSView {
     var photo: PhotoFile?
-    var thumbnailImage: NSImage?
+    var thumbnailImage: NSImage? { didSet { needsDisplay = true } }
     var photoLibrary: PhotoLibrary?
     var size: CGFloat = 50
     var isHoveringBinding: Bool = false
@@ -174,19 +174,14 @@ class HoverPreviewViewController: NSViewController {
         imageView.wantsLayer = true
         imageView.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.2).cgColor
         
-        // Load full image
-        let fullPath = getFullPath(for: photo)
-        print("Loading preview image from: \(fullPath)")
-        
-        if let fullImage = NSImage(contentsOfFile: fullPath) {
-            print("Successfully loaded image: \(fullImage.size)")
-            imageView.image = fullImage
-        } else {
-            print("Failed to load image from path")
-            // Try getting from photoLibrary cache
-            if let cachedImage = photoLibrary.getThumbnailImage(for: photo) {
-                print("Using cached thumbnail instead")
-                imageView.image = cachedImage
+        // Show the cached thumbnail at once, then a sharper preview decoded off the main thread.
+        // (Decoding the original here blocked the UI for large RAW files.)
+        imageView.image = ThumbnailCache.shared.cachedImage(for: photo) ?? photoLibrary.getThumbnailImage(for: photo)
+        let photo = self.photo
+        let library = photoLibrary
+        Task { [weak imageView] in
+            if let preview = await PreviewLoader.preview(for: photo, library: library, maxPixel: 600) {
+                imageView?.image = preview
             }
         }
         
@@ -200,14 +195,5 @@ class HoverPreviewViewController: NSViewController {
         containerView.addSubview(label)
         
         self.view = containerView
-    }
-    
-    private func getFullPath(for photo: PhotoFile) -> String {
-        let rootDir = photoLibrary.rootDirectories.first(where: { $0.id == photo.rootDirectoryId })
-        guard let rootPath = rootDir?.path else {
-            print("No root path found for rootDirectoryId: \(photo.rootDirectoryId)")
-            return photo.relativePath
-        }
-        return (rootPath as NSString).appendingPathComponent(photo.relativePath)
     }
 }
