@@ -592,7 +592,7 @@ class DatabaseManager: ObservableObject {
 
     private static func dimensionSQL(_ dim: PivotDimension) -> (expr: String, join: String) {
         let topEventCTE = "(WITH RECURSIVE anc(id, top) AS (SELECT id, id FROM events WHERE parent_id IS NULL UNION ALL SELECT e.id, anc.top FROM events e JOIN anc ON e.parent_id = anc.id) SELECT id, top FROM anc)"
-        let cellExpr = "printf('%.1f,%.1f', round(p.gps_lat, 1), round(p.gps_lon, 1))"
+        let cellExpr = "(CAST(p.gps_lat * 10 AS INTEGER) || ',' || CAST(p.gps_lon * 10 AS INTEGER))"
         switch dim {
         case .year: return ("substr(p.capture_local, 1, 4)", "")
         case .month: return ("substr(p.capture_local, 1, 7)", "")
@@ -658,7 +658,7 @@ class DatabaseManager: ObservableObject {
     /// Ungeocoded GPS cells (0.1° grid), most photos first.
     func pendingGeoCells(limit: Int = 200) throws -> [(cell: String, lat: Double, lon: Double, count: Int)] {
         let sql = """
-            SELECT printf('%.1f,%.1f', round(gps_lat, 1), round(gps_lon, 1)) AS cell, AVG(gps_lat), AVG(gps_lon), COUNT(*)
+            SELECT (CAST(gps_lat * 10 AS INTEGER) || ',' || CAST(gps_lon * 10 AS INTEGER)) AS cell, AVG(gps_lat), AVG(gps_lon), COUNT(*)
             FROM photo_files WHERE gps_lat IS NOT NULL
             GROUP BY cell HAVING cell NOT IN (SELECT cell FROM geo_cells)
             ORDER BY 4 DESC LIMIT ?
@@ -1216,6 +1216,10 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    func rawRows(_ sql: String, _ bindings: [Binding?] = []) throws -> [[Binding?]] {
+        try conn().prepare(sql).bind(bindings).map { $0 }
+    }
+    
     // MARK: - Debug Operations
 
     func executeRawSQL(_ sql: String) async throws -> ([String], [[String: String]]) {
